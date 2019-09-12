@@ -1,16 +1,28 @@
 # coding: utf-8
 #
 
+from __future__ import absolute_import
+
+import abc
+import io
+import json
 import re
 import threading
 import time
 
 from logzero import logger
-from lxml import etree
+from PIL import Image
 
+import adbutils
 import uiautomator2
 from uiautomator2.exceptions import XPathElementNotFoundError
 from uiautomator2.utils import U
+from uiautomator2.abcd import BasicUIMeta
+
+try:
+    from lxml import etree
+except ImportError:
+    logger.warning("lxml was not installed, xpath will not supported")
 
 
 def safe_xmlstr(s):
@@ -34,23 +46,53 @@ class XPathError(Exception):
     """ basic error for xpath plugin """
 
 
+class UIMeta(metaclass=abc.ABCMeta):
+    @abc.abstractmethod
+    def click(self, x: int, y: int):
+        pass
+    
+    @abc.abstractmethod
+    def swipe(self, fx: int, fy: int, tx: int, ty: int, duration: float):
+        """ duration is float type, indicate seconds """
+    
+    @abc.abstractmethod
+    def window_size(self) -> tuple:
+        """ return (width, height) """
+    
+    @abc.abstractmethod
+    def dump_hierarchy(self) -> str:
+        """ return xml content """
+    
+    @abc.abstractmethod
+    def screenshot(self):
+        """ return PIL.Image.Image """
+
+
 class XPath(object):
-    def __init__(self, d):
+    def __init__(self, d: "uiautomator2.Device"):
         """
         Args:
             d (uiautomator2 instance)
         """
         self._d = d
+        assert hasattr(d, "click")
+        assert hasattr(d, "swipe")
+        assert hasattr(d, "window_size")
+        assert hasattr(d, "dump_hierarchy")
+        assert hasattr(d, "screenshot")
+
         self._watchers = []  # item: {"xpath": .., "callback": func}
         self._timeout = 10.0
         self._click_before_delay = 0.0
         self._click_after_delay = None
+        self._last_source = None
 
         # used for click("#back") and back is the key
         self._alias = {}
         self._alias_strict = False
         self._watch_stop_event = threading.Event()
         self._watch_stopped = threading.Event()
+        self._dump_lock = threading.Lock()
 
     def global_set(self, key, value):  #dicts):
         valid_keys = {
@@ -66,7 +108,12 @@ class XPath(object):
         self._timeout = timeout
 
     def dump_hierarchy(self):
-        return self._d.dump_hierarchy()
+        with self._dump_lock:
+            self._last_source = self._d.dump_hierarchy()
+            return self._last_source
+    
+    def get_last_hierarchy(self):
+        return self._last_source
 
     def send_click(self, x, y):
         if self._click_before_delay:
@@ -83,6 +130,15 @@ class XPath(object):
 
     def send_swipe(self, sx, sy, tx, ty):
         self._d.swipe(sx, sy, tx, ty)
+
+    def send_text(self, text: str = None):
+        self._d.set_fastinput_ime()
+        self._d.clear_text()
+        if text:
+            self._d.send_keys(text)
+
+    def take_screenshot(self) -> Image.Image:
+        return self._d.screenshot()
 
     def match(self, xpath, source=None):
         return len(self(xpath, source).all()) > 0
@@ -124,8 +180,10 @@ class XPath(object):
 
     def _watch_forever(self, interval: float):
         try:
-            while not self._watch_stopped.wait(timeout=interval):
-                self.run_watchers()
+            wait_timeout = interval
+            while not self._watch_stopped.wait(timeout=wait_timeout):
+                triggered = self.run_watchers()
+                wait_timeout = min(0.5, interval) if triggered else interval
         finally:
             self._watch_stopped.clear()
             self._watch_stop_event.set()
@@ -175,7 +233,7 @@ class XPath(object):
             source = self.dump_hierarchy()
             if watch and self.run_watchers(source):
                 time.sleep(.5)  # post delay
-                deadline = time.time() + timeout
+                deadline = time.time() + timeout # correct deadline
                 continue
 
             selector = self(xpath, source)
@@ -292,10 +350,9 @@ class XPathSelector(object):
 
     def set_text(self, text: str = ""):
         el = self.get()
-        self._d.set_fastinput_ime()
+        self._parent.send_text()  # switch ime
         el.click()  # focus input-area
-        self._d.clear_text()
-        self._d.send_keys(text)
+        self._parent.send_text(text)
 
     def wait(self, timeout=None):
         """
@@ -311,6 +368,18 @@ class XPathSelector(object):
                 return self.get_last_match()
             time.sleep(.2)
         return None
+    
+    def wait_gone(self, timeout=None):
+        """
+        Returns:
+            True if gone else False
+        """
+        deadline = time.time() + (timeout or self._global_timeout)
+        while time.time() < deadline:
+            if not self.exists:
+                return True
+            time.sleep(.2)
+        return False
 
     def click_nowait(self):
         x, y = self.all()[0].center()
@@ -324,6 +393,10 @@ class XPathSelector(object):
             timeout (float): max wait timeout
         """
         self._parent.click(self._xpath, watch=watch, timeout=timeout)
+
+    def screenshot(self) -> Image.Image:
+        el = self.get()
+        return el.screenshot()
 
 
 class XMLElement(object):
@@ -364,14 +437,63 @@ class XMLElement(object):
         x, y = self.center()
         self._parent.send_click(x, y)
 
+    def screenshot(self):
+        """
+        Take screenshot of element
+        """
+        im = self._parent.take_screenshot()
+        return im.crop(self.bounds)
+
+    def swipe(self, direction: str, scale: float = 0.9):
+        """
+        Args:
+            direction: one of ["left", "right", "up", "down"]
+            scale: percent of swipe, range (0, 1.0)
+        """
+        def _swipe(_from, _to):
+            self._parent.send_swipe(_from[0], _from[1], _to[0], _to[1])
+
+        assert 0 < scale <= 1.0
+
+        lx, ly, rx, ry = self.bounds
+        width, height = rx - lx, ry - ly
+
+        h_offset = int(width * (1 - scale)) // 2
+        v_offset = int(height * (1 - scale)) // 2
+
+        left = lx+h_offset, ly + height // 2
+        up = lx + width // 2, ly + v_offset
+        right = rx - h_offset, ly + height // 2
+        bottom = lx + width // 2, ry - v_offset
+
+        if direction == "left":
+            _swipe(right, left)
+        elif direction == "right":
+            _swipe(left, right)
+        elif direction == "up":
+            _swipe(bottom, up)
+        elif direction == "down":
+            _swipe(up, bottom)
+        else:
+            raise RuntimeError("Unknown direction:", direction)
+
+    @property
+    def bounds(self):
+        """
+        Returns:
+            tuple of (left, top, right, bottom)
+        """
+        bounds = self.elem.attrib.get("bounds")
+        lx, ly, rx, ry = map(int, re.findall(r"\d+", bounds))
+        return (lx, ly, rx, ry)
+
     @property
     def rect(self):
         """
         Returns:
             (left_top_x, left_top_y, width, height)
         """
-        bounds = self.elem.attrib.get("bounds")
-        lx, ly, rx, ry = map(int, re.findall(r"\d+", bounds))
+        lx, ly, rx, ry = self.bounds
         return lx, ly, rx - lx, ry - ly
 
     @property
@@ -383,50 +505,72 @@ class XMLElement(object):
         return self.elem.attrib
 
 
-# class Exists(object):
-#     """Exists object with magic methods."""
+class AdbUI(BasicUIMeta):
+    """
+    Use adb command to run ui test
+    """
+    def __init__(self, d: adbutils.AdbDevice):
+        self._d = d
 
-#     def __init__(self, selector):
-#         self.selector = selector
+    def click(self, x, y):
+        self._d.click(x, y)
+    
+    def swipe(self, sx, sy, ex, ey, duration):
+        self._d.swipe(sx, sy, ex, ey, duration)
+    
+    def window_size(self):
+        w, h = self._d.window_size()
+        return w, h
+    
+    def dump_hierarchy(self):
+        return self._d.dump_hierarchy()
+    
+    def screenshot(self):
+        d = self._d
+        json_output = d.shell(["LD_LIBRARY_PATH=/data/local/tmp", "/data/local/tmp/minicap", "-i", "2&>/dev/null"]).strip()
+        data = json.loads(json_output)
+        w, h, r = data["width"], data["height"], data["rotation"]
+        remote_image_path = "/sdcard/minicap.jpg"
+        d.shell(["rm", remote_image_path])
+        d.shell([
+            "LD_LIBRARY_PATH=/data/local/tmp", 
+            "/data/local/tmp/minicap", 
+            "-P", "{0}x{1}@{0}x{1}/{2}".format(w, h, r), 
+            "-s", ">"+remote_image_path])
 
-#     def __nonzero__(self):
-#         """Magic method for bool(self) python2 """
-#         return len(self.selector.all()) > 0
+        if d.sync.stat(remote_image_path).size == 0:
+            raise RuntimeError("screenshot using minicap error")
+        
+        buf = io.BytesIO()
+        for data in d.sync.iter_content(remote_image_path):
+            buf.write(data)
+        return Image.open(buf)
 
-#     def __bool__(self):
-#         """ Magic method for bool(self) python3 """
-#         return self.__nonzero__()
 
-#     def __call__(self, timeout=0):
-#         """Magic method for self(args).
-
-#         Args:
-#             timeout (float): exists in seconds
-#         """
-#         if timeout:
-#             return self.uiobject.wait(timeout=timeout)
-#         return bool(self)
-
-#     def __repr__(self):
-#         return str(bool(self))
 
 if __name__ == "__main__":
-    init()
-    import uiautomator2.ext.htmlreport as htmlreport
+    d = AdbUI(adbutils.adb.device())
+    xpath = XPath(d)
+    # print(d.screenshot())
+    # print(d.dump_hierarchy()[:20])
+    xpath("App").click()
+    xpath("Alarm").click()
+    # init()
+    # import uiautomator2.ext.htmlreport as htmlreport
 
-    d = uiautomator2.connect()
-    hrp = htmlreport.HTMLReport(d)
+    # d = uiautomator2.connect()
+    # hrp = htmlreport.HTMLReport(d)
 
-    # take screenshot before each click
-    hrp.patch_click()
-    d.app_start("com.netease.cloudmusic", stop=True)
+    # # take screenshot before each click
+    # hrp.patch_click()
+    # d.app_start("com.netease.cloudmusic", stop=True)
 
-    # watchers
-    d.ext_xpath.when("跳过").click()
-    # d.ext_xpath.when("知道了").click()
+    # # watchers
+    # d.ext_xpath.when("跳过").click()
+    # # d.ext_xpath.when("知道了").click()
 
-    # steps
-    d.ext_xpath("//*[@text='私人FM']/../android.widget.ImageView").click()
-    d.ext_xpath("下一首").click()
-    d.ext_xpath.sleep_watch(2)
-    d.ext_xpath("转到上一层级").click()
+    # # steps
+    # d.ext_xpath("//*[@text='私人FM']/../android.widget.ImageView").click()
+    # d.ext_xpath("下一首").click()
+    # d.ext_xpath.sleep_watch(2)
+    # d.ext_xpath("转到上一层级").click()

@@ -3,7 +3,7 @@
 各种库的版本号
 
 - [![PyPI](https://img.shields.io/pypi/v/uiautomator2.svg?label=uiautomator2)](https://pypi.python.org/pypi/uiautomator2)
-- ![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/openatx/atx-agent.svg?label=atx-agent)
+- [![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/openatx/atx-agent.svg?label=atx-agent)](https://github.com/openatx/atx-agent)
 - ![GitHub tag (latest SemVer)](https://img.shields.io/github/tag/openatx/android-uiautomator-server.svg?label=android-uiautomator-server)
 - ![PyPI](https://img.shields.io/pypi/v/adbutils.svg?label=adbutils)
 - ![PyPI](https://img.shields.io/pypi/v/requests.svg?label=requests)
@@ -13,9 +13,9 @@
 
 <p align="left"><img src="docs/img/qqgroup.png" /></div>
 
-[uiautomator](https://developer.android.com/training/testing/ui-automator.html)是Google提供的用来做安卓自动化测试的一个Java库。功能很强，可以对第三方App进行测试，获取屏幕上任意一个APP的任意一个控件属性，并对其进行任意操作，但有两个缺点：1. 测试脚本只能使用Java语言 2. 测试脚本必须每次被上传到设备上运行。
+[UiAutomator](https://developer.android.com/training/testing/ui-automator.html)是Google提供的用来做安卓自动化测试的一个Java库，基于Accessibility服务。功能很强，可以对第三方App进行测试，获取屏幕上任意一个APP的任意一个控件属性，并对其进行任意操作，但有两个缺点：1. 测试脚本只能使用Java语言 2. 测试脚本要打包成jar或者apk包上传到设备上才能运行。
 
-我们希望测试能够用Python编写，能够在电脑上运行的时候就控制手机。这里要非常感谢 Xiaocong He ([@xiaocong][])，他将这个想法实现了出来（见[xiaocong/uiautomator](https://github.com/xiaocong/uiautomator)），原理是在手机上运行了一个http rpc服务，将uiautomator中的功能开放出来，然后再将这些http接口封装成Python库。
+我们希望测试逻辑能够用Python编写，能够在电脑上运行的时候就控制手机。这里要非常感谢 Xiaocong He ([@xiaocong][])，他将这个想法实现了出来（见[xiaocong/uiautomator](https://github.com/xiaocong/uiautomator)），原理是在手机上运行了一个http rpc服务，将uiautomator中的功能开放出来，然后再将这些http接口封装成Python库。
 因为`xiaocong/uiautomator`这个库，已经很久不见更新。所以我们直接fork了一个版本，为了方便做区分我们就在后面加了个2 [openatx/uiautomator2](https://github.com/openatx/uiautomator2)
 
 除了对原有的库的bug进行了修复，还增加了很多新的Feature。主要有以下部分：
@@ -29,13 +29,13 @@
 
 >这里要先说明下，因为经常有很多人问 openatx/uiautomator2 并不支持iOS测试，需要iOS自动化测试，可以转到这个库 [openatx/facebook-wda](https://github.com/openatx/facebook-wda)。
 
-> 另外这个库 <https://github.com/NeteaseGame/ATX> 也是我们开发的，不过已经不维护了。
+> PS: 这个库 ~~<https://github.com/NeteaseGame/ATX>~~ 目前已经不维护了，请尽快更换。
 
 ## Requirements
-- Android版本不低于 4.4
-- Python >= 3.6 
+- Android版本 4.4+
+- Python 3.6+
 
->如果仍在用python2, 需要使用命令`pip install -U "uiautomator2<=1.0.0"`安装
+>如果用python2的pip安装，会安装本库的老版本0.2.3；如果用python3.5的pip安装，会安装本库的老版本0.3.3；两者均已经不会再维护；PYPI上的最近版本是这个：https://pypi.org/project/uiautomator2/
 
 ## QUICK START
 先准备一台（不要两台）开启了`开发者选项`的安卓手机，连接上电脑，确保执行`adb devices`可以看到连接上的设备。
@@ -65,8 +65,8 @@ screenOn': True, 'sdkInt': 27, 'naturalOrientation': True}
 ## 相关项目
 - 设备管理平台，设备多了就会用到 [atxserver2](https://github.com/openatx/atxserver2)
 - 专门与adb进行交互的库 [adbutils](https://github.com/openatx/adbutils)
-- <https://github.com/openatx/atx-agent>
-- weditor[https://github.com/openatx/weditor] 类似于uiautomatorviewer，专门为本项目开发的辅助编辑器
+- [atx-agent](https://github.com/openatx/atx-agent) 运行在设备上的驻守程序，go开发，用于保活设备上相关的服务
+- [weditor](https://github.com/openatx/weditor) 类似于uiautomatorviewer，专门为本项目开发的辅助编辑器
 
 **[Installation](#installation)**
 
@@ -100,22 +100,19 @@ screenOn': True, 'sdkInt': 27, 'naturalOrientation': True}
   - **[Toast](#toast)**
   - **[XPath](#xpath)**
 
-**[常见问题](https://github.com/openatx/uiautomator2/wiki#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98-testerhome%E8%AE%A8%E8%AE%BA%E5%B8%96)**
-  - **[502错误](https://github.com/openatx/uiautomator2/wiki#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98-testerhome%E8%AE%A8%E8%AE%BA%E5%B8%96)**
-  - **[Connection Error](https://github.com/openatx/uiautomator2/wiki#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98-testerhome%E8%AE%A8%E8%AE%BA%E5%B8%96)**
-  - **[深度睡眠](https://github.com/openatx/uiautomator2/wiki#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98-testerhome%E8%AE%A8%E8%AE%BA%E5%B8%96)**
-  - **[Testerhome问题收集贴](https://github.com/openatx/uiautomator2/wiki#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98-testerhome%E8%AE%A8%E8%AE%BA%E5%B8%96)**
-  - **[点击偏差](https://github.com/openatx/uiautomator2/wiki#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98-testerhome%E8%AE%A8%E8%AE%BA%E5%B8%96)**
-  - **[释放AccessibilityService](https://github.com/openatx/uiautomator2/wiki#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98-testerhome%E8%AE%A8%E8%AE%BA%E5%B8%96)**
+**常见问题**
+  - **[停止UiAutomator守护服务，释放AccessibilityService](#stop-uiautomator)**
+  - **[502错误](https://github.com/openatx/uiautomator2/wiki/Common-issues)**
+  - **[Connection Error, 深度睡眠, 点击偏差 等](https://github.com/openatx/uiautomator2/wiki/Common-issues)**
+  
 
-**[实验性功能](https://github.com/openatx/uiautomator2/wiki#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
-  - **[远程投屏](https://github.com/openatx/uiautomator2/wiki#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
-  - **[插上自动init](https://github.com/openatx/uiautomator2/wiki#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
-  - **[htmlreport](https://github.com/openatx/uiautomator2/wiki#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
-  - **[诊断uiautomator2方法](https://github.com/openatx/uiautomator2/wiki#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
-  - **[Plugin](https://github.com/openatx/uiautomator2/wiki#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
-  - **[Hooks](https://github.com/openatx/uiautomator2/wiki#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
-  - **[失败时弹出提示框](https://github.com/openatx/uiautomator2/wiki#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
+**[实验性功能](https://github.com/openatx/uiautomator2/wiki/Common-issues#%E5%AE%9E%E9%AA%8C%E6%80%A7%E5%8A%9F%E8%83%BD)**
+  - **远程投屏**
+  - **htmlreport**
+  - **诊断uiautomator2方法**
+  - **Plugin**
+  - **Hooks**
+  - **失败时弹出提示框**
 
 **[项目历史](#项目历史)**
 
@@ -170,12 +167,12 @@ screenOn': True, 'sdkInt': 27, 'naturalOrientation': True}
 
     具体参考文章：[浅谈自动化测试工具python-uiautomator2](https://testerhome.com/topics/11357)
 
-4. 【推荐】AppetizerIO 所见即所得脚本编辑器
+4. 【可选】AppetizerIO 所见即所得脚本编辑器
 
     [AppetizerIO](https://www.appetizer.io) 提供了对uiautomator2的深度集成，可以图形化管理ATX设备，还有所见即所得脚本编辑器
     * 到网站下载直接打开，首次使用需要注册账号
     * `设备管理` 界面里可以检查设备是否正常init，起停atx-agent，抓取atx-agent.log文件
-    * `APP测试->脚本助手`调出脚本助手，实时界面同步，点击界面直接插入各种代码，同时支持uiautomator和Appium
+    * `测试脚本`调出脚本助手，实时界面同步，点击界面直接插入各种代码，同时支持uiautomator和Appium
     * **[视频教程 请戳这里](https://github.com/openatx/uiautomator2/wiki/Appetizer%E6%89%80%E8%A7%81%E5%8D%B3%E6%89%80%E5%BE%97u2%E8%84%9A%E6%9C%AC%E7%BC%96%E8%BE%91%E5%99%A8)**  [其他文档在此](http://doc.appetizer.io)
     
 # Connect to a device
@@ -215,45 +212,43 @@ d = u2.connect_adb_wifi("10.0.0.1:5555")
 # + Python: u2.connect_usb("10.0.0.1:5555")
 ```
 
-Calling `u2.connect()` with no argument, `uiautomator2` will obtain device IP from the environment variable `ANDROID_DEVICE_IP`.
+Calling `u2.connect()` with no argument, `uiautomator2` will obtain device IP from the environment variable `ANDROID_DEVICE_IP` or `ANDROID_SERIAL`.
 If this environment variable is empty, uiautomator will fall back to `connect_usb` and you need to make sure that there is only one device connected to the computer.
 
 # Command line
 其中的`$device_ip`代表设备的ip地址
 
+如需指定设备需要传入`--serial` 如 `python3 -m uiautomator2 --serial bff1234 <SubCommand>`, SubCommand为子命令（init,或者screenshot等）
+
+> 1.0.3 Added: `python3 -m uiautomator2`可以简写为`uiautomator2`
+
 - init: 为设备安装所需要的程序
-- install: 安装apk，apk通过URL给出
 
     ```bash
-    $ python -m uiautomator2.cli install $device_ip https://example.org/some.apk
-    MainThread: 15:37:55,731 downloading 80.4 kB / 770.6 kB
-    MainThread: 15:37:56,763 installing 770.6 kB / 770.6 kB
-    MainThread: 15:37:58,780 success installed 770.6 kB / 770.6 kB
-    ```
-
-- clear-cache: 清空缓存
-
-    ```bash
-    $ python -m uiautomator2 clear-cache
-    ```
-
-- `app-stop-all`: 停止所有应用
-
-    ```bash
-    $ python -m uiautomator2 app-stop-all $device_ip
+    uiautomator2 init 
+    # If you need specify device to init, pass --serial <serial> 
+    python3 -m uiautomator2 init --serial your-device-serial
     ```
 
 - screenshot: 截图
 
     ```bash
-    $ python -m uiautomator2 screenshot $device_ip screenshot.jpg
+    $ python -m uiautomator2 screenshot screenshot.jpg
     ```
 
-- healthcheck: 健康检查
+- uninstall： 卸载
 
     ```bash
-    $ python -m uiautomator2 healthcheck $device_ip
+    python -m uiautomator2 uninstall <package-name> # 卸载一个包
+    python -m uiautomator2 uninstall <package-name-1> <package-name-2> # 卸载多个包
+    python -m uiautomator2 uninstall --all # 全部卸载
     ```
+
+- install: 安装apk，apk通过URL给出 (暂时不能用)
+- clear-cache: 清空缓存 (废弃中，目前已经不需要改接口）
+- `app-stop-all`: 停止所有应用 （暂不能用）
+- healthcheck: 健康检查 (咱不能用)
+
     
 # API Documents
 ## Global settings
@@ -296,7 +291,15 @@ d.app_install('http://some-domain.com/some.apk')
 
 ### Launch an app
 ```python
-d.app_start("com.example.hello_world") # start with package name
+# 默认的这种方法是先通过atx-agent解析apk包的mainActivity，然后调用am start -n $package/$activity启动
+d.app_start("com.example.hello_world")
+
+# 使用 monkey -p com.example.hello_world -c android.intent.category.LAUNCHER 1 启动
+# 这种方法有个附带的问题，它自动会将手机的旋转锁定给关掉
+d.app_start("com.example.hello_world", use_monkey=True) # start with package name
+
+# 通过指定main activity的方式启动应用，等价于调用am start -n com.example.hello_world/.MainActivity
+d.app_start("com.example.hello_world", ".MainActivity")
 ```
 
 ### Stop an app
@@ -331,6 +334,28 @@ d.app_info("com.examples.demo")
 img = d.app_icon("com.examples.demo")
 img.save("icon.png")
 ```
+
+### List all running apps
+```python
+d.app_list_running()
+# expect output
+# ["com.xxxx.xxxx", "com.github.uiautomator", "xxxx"]
+```
+
+### Wait until app running
+```python
+pid = d.app_wait("com.example.android") # 等待应用运行, return pid(int)
+if not pid:
+    print("com.example.android is not running")
+else:
+    print("com.example.android pid is %d" % pid)
+
+d.app_wait("com.example.android", front=True) # 等待应用前台运行
+d.app_wait("com.example.android", timeout=20.0) # 最长等待时间20s（默认）
+```
+
+> Add in version 1.2.0
+
 ### Push and pull files
 * push a file to the device
 
@@ -441,6 +466,7 @@ Session represent an app lifecycle. Can be used to start app, detect app crash.
     ```python
     sess = d.session("com.netease.cloudmusic") # start 网易云音乐
     sess.close() # 停止网易云音乐
+    sess.restart() # 冷启动网易云音乐
     ```
 
 * Use python `with` to launch and close app
@@ -453,7 +479,11 @@ Session represent an app lifecycle. Can be used to start app, detect app crash.
 * Attach to the running app
 
     ```python
+    # launch app if not running, skip launch if already running
     sess = d.session("com.netease.cloudmusic", attach=True)
+
+    # raise SessionBrokenError if not running
+    sess = d.session("com.netease.cloudmusic", attach=True, strict=True)
     ```
 
 * Detect app crash
@@ -652,6 +682,14 @@ You can find all key code definitions at [Android KeyEvnet](https://developer.an
     ```python
     d.swipe(sx, sy, ex, ey)
     d.swipe(sx, sy, ex, ey, 0.5) # swipe for 0.5s(default)
+    ```
+
+* SwipeExt 扩展功能
+
+    ```python
+    d.swipe_ext("right") # 屏幕右滑，4选1 "left", "right", "up", "bottom"
+    d.swipe_ext("right", scale=0.9) # 默认0.9, 滑动距离为屏幕宽度的90%
+    d.swipe_ext("right", box=(0, 0, 100, 100)) # 在 (0,0) -> (100, 100) 这个区域做滑动
     ```
 
 * Drag
@@ -1168,21 +1206,8 @@ You can register [watchers](http://developer.android.com/tools/help/uiautomator/
   d.watchers.run()
   ```
 
-* Run all watchers when page update.
+* ~~Run all watchers when page update.~~ (因为稳定性原因，目前已废弃)
 
-  通常可以用来自动点击权限确认框，或者自动安装
-
-  ```python
-  d.watcher("OK").when(text="OK").click(text="OK")
-  # enable auto trigger watchers
-  d.watchers.watched = True
-
-  # disable auto trigger watchers
-  d.watchers.watched = False
-
-  # get current trigger watchers status
-  assert d.watchers.watched == False
-  ```
 
 另外文档还是有很多没有写，推荐直接去看源码[__init__.py](uiautomator2/__init__.py)
 
@@ -1312,8 +1337,34 @@ for elem in d.xpath("//android.widget.TextView").all():
 
 See also: https://github.com/openatx/uiautomator2/blob/master/uiautomator2/ext/xpath/README.md
 
+# 常见问题
+很多没写在这个地方的，都放到了这里 [Common Issues](https://github.com/openatx/uiautomator2/wiki/Common-issues)
+
+## Stop UiAutomator
+停止UiAutomator守护服务
+
+https://github.com/openatx/uiautomator2/wiki/Common-issues
+
+因为有`atx-agent`的存在，Uiautomator会被一直守护着，如果退出了就会被重新启动起来。但是Uiautomator又是霸道的，一旦它在运行，手机上的辅助功能、电脑上的uiautomatorviewer 就都不能用了，除非关掉该框架本身的uiautomator。下面就说下两种关闭方法
+
+方法1：
+
+直接打开uiautomator app（init成功后，就会安装上的），点击`关闭UIAutomator`
+
+方法2:
+
+```python
+d.service("uiautomator").stop()
+
+# d.service("uiautomator").start() # 启动
+# d.service("uiautomator").running() # 是否在运行
+```
+
+[ATX与Maxim共存AccessibilityService的方法](https://testerhome.com/topics/17179)
+
 # 项目历史
-* 项目重构自 <https://github.com/openatx/atx-uiautomator>
+* 项目重构自 <https://github.com/xiaocong/uiautomator>
+
 ## Google uiautomator与uiautomator2的区别
 1. API相似但是不完全兼容
 2. uiautomator2是安卓项目，而uiautomator是Java项目
@@ -1322,11 +1373,12 @@ See also: https://github.com/openatx/uiautomator2/blob/master/uiautomator2/ext/x
 5. uiautomator2获取控件速度比uiautomator快
 
 ## [CHANGELOG (generated by pbr)](CHANGELOG)
-See changelog from git history
+重大更新
 
-```
-git log --graph --date-order -C -M --pretty=format:"<%h> %ad [%an] %Cgreen%d%Creset %s" --all --date=short
-```
+- 1.0.0
+
+    移除 `d.watchers.watched` (会拖慢自动化的执行速度并且还会降低稳定性)
+
 
 ## 依赖项目
 - uiautomator守护程序 <https://github.com/openatx/atx-agent>
@@ -1354,9 +1406,9 @@ Other [contributors](../../graphs/contributors)
 ## 其他优秀的项目
 - [google/mobly](https://github.com/google/mobly) 谷歌内部的测试框架，虽然我不太懂，但是感觉很好用
 - https://www.appetizer.io/ 包含一个很好用的IDE，快速编写脚本，也可以插桩采集性能。
-- http://airtest.netease.com/ 本项目的前身，后来被网易广州团队接手并继续优化。实现有一个不错的IDE
-- http://www.sikulix.com/ 基于图像识别的自动化测试框架，非常的老牌
 - https://github.com/atinfo/awesome-test-automation 所有优秀测试框架的集合，包罗万象
+- http://www.sikulix.com/ 基于图像识别的自动化测试框架，非常的老牌
+- http://airtest.netease.com/ 本项目的前身，后来被网易广州团队接手并继续优化。实现有一个不错的IDE
 
 # LICENSE
 [MIT](LICENSE)

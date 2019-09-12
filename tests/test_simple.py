@@ -3,9 +3,12 @@
 # Test apk Download from
 # https://github.com/appium/java-client/raw/master/src/test/java/io/appium/java_client/ApiDemos-debug.apk
 
-import uiautomator2 as u2
-import unittest
 import time
+import unittest
+
+import pytest
+
+import uiautomator2 as u2
 
 
 class SimpleTestCase(unittest.TestCase):
@@ -34,7 +37,8 @@ class SimpleTestCase(unittest.TestCase):
             d(text="Show Short Notification").click()
         except u2.UiObjectNotFoundError:
             d(text="SHOW SHORT NOTIFICATION").click()
-        self.assertEqual(d.toast.get_message(2, 5, ""), "Short notification")
+        #self.assertEqual(d.toast.get_message(2, 5, ""), "Short notification")
+        self.assertIn("Short notification", d.toast.get_message(2, 5, ""))
         time.sleep(.5)
         self.assertIsNone(d.toast.get_message(0, 0.4))
         # d.toast.reset()
@@ -46,6 +50,7 @@ class SimpleTestCase(unittest.TestCase):
         d(text="App").click()
         d(scrollable=True).scroll.to(text="Voice Recognition")
 
+    @pytest.mark.skip("Deprecated")
     def test_watchers(self):
         """
         App -> Notification -> Status Bar

@@ -5,7 +5,15 @@
 #     pass
 
 
-class UiaError(Exception):
+class BaseError(Exception):
+    pass
+
+
+class UiaError(BaseError):
+    pass
+
+
+class UiautomatorQuitError(UiaError):
     pass
 
 

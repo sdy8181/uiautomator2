@@ -38,19 +38,21 @@ import requests
 import six
 import six.moves.urllib.parse as urlparse
 from retry import retry
+from urllib3.util.retry import Retry
 
 import adbutils
-from uiautomator2.exceptions import (ConnectError, GatewayError, JsonRpcError,
-                                     NullObjectExceptionError,
-                                     NullPointerExceptionError,
-                                     SessionBrokenError,
-                                     StaleObjectExceptionError, UiaError,
-                                     UiAutomationNotConnectedError,
-                                     UiObjectNotFoundError)
-from uiautomator2.session import Session, set_fail_prompt  # noqa: F401
-from uiautomator2.version import __atx_agent_version__
-from uiautomator2.utils import cache_return
-import uiautomator2.xpath as xpath
+from deprecated import deprecated
+
+from . import xpath
+from .exceptions import (BaseError, ConnectError, GatewayError, JsonRpcError,
+                         NullObjectExceptionError, NullPointerExceptionError,
+                         SessionBrokenError, StaleObjectExceptionError,
+                         UiaError, UiAutomationNotConnectedError,
+                         UiObjectNotFoundError)
+from .init import Initer
+from .session import Session, set_fail_prompt  # noqa: F401
+from .utils import cache_return
+from .version import __atx_agent_version__
 
 if six.PY2:
     FileNotFoundError = OSError
@@ -99,7 +101,7 @@ def connect(addr=None):
         addr (str): uiautomator server address or serial number. default from env-var ANDROID_DEVICE_IP
 
     Returns:
-        UIAutomatorServer
+        Device
     
     Raises:
         ConnectError
@@ -112,7 +114,7 @@ def connect(addr=None):
         connect("cff1123ea")  # adb device serial number
     """
     if not addr or addr == '+':
-        addr = os.getenv('ANDROID_DEVICE_IP')
+        addr = os.getenv('ANDROID_DEVICE_IP') or os.getenv("ANDROID_SERIAL")
     wifi_addr = fix_wifi_addr(addr)
     if wifi_addr:
         return connect_wifi(addr)
@@ -138,53 +140,58 @@ def connect_adb_wifi(addr):
     return connect_usb(addr)
 
 
-def connect_usb(serial=None, healthcheck=False):
+def connect_usb(serial=None, healthcheck=False, init=False):
     """
     Args:
         serial (str): android device serial
         healthcheck (bool): start uiautomator if not ready
+        init (bool): initial with apk and atx-agent
 
     Returns:
-        UIAutomatorServer
+        Device
     
     Raises:
         ConnectError
     """
     adb = adbutils.AdbClient()
     if not serial:
-        device = adb.must_one_device()
+        device = adb.device()
     else:
         device = adbutils.AdbDevice(adb, serial)
-    # adb = adbutils.Adb(serial)
     lport = device.forward_port(7912)
     d = connect_wifi('127.0.0.1:' + str(lport))
     d._serial = device.serial
+    
     if not d.agent_alive:
-        warnings.warn("backend atx-agent is not alive, start again ...",
-                    RuntimeWarning)
-        # TODO: /data/local/tmp might not be execuable and atx-agent can be somewhere else
-        device.shell(["/data/local/tmp/atx-agent", "server", "-d"])
-        deadline = time.time() + 3
-        while time.time() < deadline:
-            if d.agent_alive:
-                break
+        initer = Initer(device)
+        if not initer.check_install():
+            if not init:
+                raise RuntimeError("Device need to be init with command: uiautomator2 init -s " + device.serial)
+            initer.install() # same as run cli: uiautomator2 init
         else:
-            raise RuntimeError("atx-agent recover failed")
+            warnings.warn("start atx-agent ...", RuntimeWarning)
+            # TODO: /data/local/tmp might not be execuable and atx-agent can be somewhere else
+            device.shell(["/data/local/tmp/atx-agent", "server", "--nouia", "-d"])
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                if d.agent_alive:
+                    break
+            else:
+                raise RuntimeError("atx-agent recover failed")
 
     if healthcheck:
         if not d.alive:
-            warnings.warn("backend uiautomator2 is not alive, start again ...",RuntimeWarning)
+            warnings.warn("start uiautomator2 ...",RuntimeWarning)
             d.healthcheck()
     return d
 
-
-def connect_wifi(addr:str) -> "UIAutomatorServer":
+def connect_wifi(addr:str) -> "Device":
     """
     Args:
         addr (str) uiautomator server address.
 
     Returns:
-        UIAutomatorServer
+        Device
 
     Raises:
         ConnectError
@@ -200,19 +207,21 @@ def connect_wifi(addr:str) -> "UIAutomatorServer":
     u = urlparse.urlparse(addr)
     host = u.hostname
     port = u.port or 7912
-    return UIAutomatorServer(host, port)
+    return Device(host, port)
 
 
 class TimeoutRequestsSession(requests.Session):
     def __init__(self):
         super(TimeoutRequestsSession, self).__init__()
+        retries = Retry(total=3, connect=3, backoff_factor=0.5)
         # refs: https://stackoverflow.com/questions/33895739/python-requests-cant-load-any-url-remote-end-closed-connection-without-respo
-        adapter = requests.adapters.HTTPAdapter(max_retries=3)
+        # refs: https://stackoverflow.com/questions/15431044/can-i-set-max-retries-for-requests-request
+        adapter = requests.adapters.HTTPAdapter(max_retries=retries)
         self.mount("http://", adapter)
         self.mount("https://", adapter)
 
     def request(self, method, url, **kwargs):
-        if kwargs.get('timeout') is None:
+        if 'timeout' not in kwargs:
             kwargs['timeout'] = HTTP_TIMEOUT
         verbose = hasattr(self, 'debug') and self.debug
         if verbose:
@@ -227,10 +236,9 @@ class TimeoutRequestsSession(requests.Session):
         try:
             resp = super(TimeoutRequestsSession, self).request(
                 method, url, **kwargs)
-        except requests.ConnectionError:
-            raise EnvironmentError(
-                "atx-agent is not running. Fix it with following steps.\n1. Plugin device into computer.\n2. Run command \"python -m uiautomator2 init\""
-            )
+        except requests.ConnectionError as e:
+            # High possibly atx-agent is down
+            raise
         else:
             if verbose:
                 print(
@@ -243,7 +251,7 @@ class TimeoutRequestsSession(requests.Session):
 
 def plugin_register(name, plugin, *args, **kwargs):
     """
-    Add plugin into UIAutomatorServer
+    Add plugin into Device
 
     Args:
         name: string
@@ -261,14 +269,14 @@ def plugin_register(name, plugin, *args, **kwargs):
         d = u2.connect()
         d.ext_upload_screenshot()
     """
-    UIAutomatorServer.plugins()[name] = (plugin, args, kwargs)
+    Device.plugins()[name] = (plugin, args, kwargs)
 
 
 def plugin_clear():
-    UIAutomatorServer.plugins().clear()
+    Device.plugins().clear()
 
 
-class UIAutomatorServer(object):
+class Device(object):
     __isfrozen = False
     __plugins = {}
 
@@ -305,7 +313,7 @@ class UIAutomatorServer(object):
 
     @staticmethod
     def plugins():
-        return UIAutomatorServer.__plugins
+        return Device.__plugins
 
     def __setattr__(self, key, value):
         """ Prevent creating new attributes outside __init__ """
@@ -512,8 +520,9 @@ class UIAutomatorServer(object):
     def agent_alive(self):
         try:
             r = self._reqsess.get(self.path2url('/version'), timeout=2)
-            return r.status_code == 200
-        except:
+            if r.status_code == 200:
+                return True
+        except (requests.HTTPError, requests.ConnectionError) as e:
             return False
 
     @property
@@ -754,6 +763,7 @@ class UIAutomatorServer(object):
             return self._reqsess.get(
                 self.path2url("/shell/stream"),
                 params={"command": cmdargs},
+                timeout=None,
                 stream=True)
         ret = self._reqsess.post(
             self.path2url('/shell'),
@@ -788,19 +798,19 @@ class UIAutomatorServer(object):
         return self.shell(cmdline)[0]
 
     def app_start(self,
-                  pkg_name,
+                  package_name,
                   activity=None,
                   extras={},
-                  wait=True,
+                  wait=False,
                   stop=False,
                   unlock=False, launch_timeout=None, use_monkey=False):
         """ Launch application
         Args:
-            pkg_name (str): package name
+            package_name (str): package name
             activity (str): app activity
             stop (bool): Stop app before starting the activity. (require activity)
             use_monkey (bool): use monkey command to start app when activity is not given
-            wait (bool): wait until app started. default True
+            wait (bool): wait until app started. default False
 
         Raises:
             SessionBrokenError
@@ -809,59 +819,57 @@ class UIAutomatorServer(object):
             self.unlock()
 
         if stop:
-            self.app_stop(pkg_name)
+            self.app_stop(package_name)
 
-        if activity:
-            # -D: enable debugging
-            # -W: wait for launch to complete
-            # -S: force stop the target app before starting the activity
-            # --user <USER_ID> | current: Specify which user to run as; if not
-            #    specified then run as the current user.
-            # -e <EXTRA_KEY> <EXTRA_STRING_VALUE>
-            # --ei <EXTRA_KEY> <EXTRA_INT_VALUE>
-            # --ez <EXTRA_KEY> <EXTRA_BOOLEAN_VALUE>
-            args = [
-                'am', 'start', '-a', 'android.intent.action.MAIN', '-c',
-                'android.intent.category.LAUNCHER'
-            ]
-            if wait:
-                args.append('-W')
-            args += ['-n', '{}/{}'.format(pkg_name, activity)]
-            # -e --ez
-            extra_args = []
-            for k, v in extras.items():
-                if isinstance(v, bool):
-                    extra_args.extend(['--ez', k, 'true' if v else 'false'])
-                elif isinstance(v, int):
-                    extra_args.extend(['--ei', k, str(v)])
-                else:
-                    extra_args.extend(['-e', k, v])
-            args += extra_args
-            # 'am', 'start', '-W', '-n', '{}/{}'.format(pkg_name, activity))
-            self.shell(args)
-        elif use_monkey:
+        if use_monkey:
             self.shell([
-                'monkey', '-p', pkg_name, '-c',
+                'monkey', '-p', package_name, '-c',
                 'android.intent.category.LAUNCHER', '1'
             ])
-        else:
-            # launch with atx-agent
-            data = {"flags": "-W"}
-            if launch_timeout:
-                data["timeout"] = str(launch_timeout)
-            resp = self._reqsess.post(
-                self.path2url("/session/" + pkg_name), data=data)
-            if resp.status_code != 200: # 410: Gone
-                raise SessionBrokenError(pkg_name, resp.text)
-            jsondata = resp.json()
-            if not jsondata["success"]:
-                raise SessionBrokenError(pkg_name,
-                                         jsondata["error"], jsondata["output"])
-            
-    
+            if wait:
+                self.app_wait(package_name)
+            return
+        
+        if not activity:
+            info = self.app_info(package_name)
+            activity = info['mainActivity']
+            if activity.find(".") == -1:
+                activity = "." + activity
+
+        # -D: enable debugging
+        # -W: wait for launch to complete
+        # -S: force stop the target app before starting the activity
+        # --user <USER_ID> | current: Specify which user to run as; if not
+        #    specified then run as the current user.
+        # -e <EXTRA_KEY> <EXTRA_STRING_VALUE>
+        # --ei <EXTRA_KEY> <EXTRA_INT_VALUE>
+        # --ez <EXTRA_KEY> <EXTRA_BOOLEAN_VALUE>
+        args = [
+            'am', 'start', '-a', 'android.intent.action.MAIN', '-c',
+            'android.intent.category.LAUNCHER'
+        ]
+        args += ['-n', '{}/{}'.format(package_name, activity)]
+        # -e --ez
+        extra_args = []
+        for k, v in extras.items():
+            if isinstance(v, bool):
+                extra_args.extend(['--ez', k, 'true' if v else 'false'])
+            elif isinstance(v, int):
+                extra_args.extend(['--ei', k, str(v)])
+            else:
+                extra_args.extend(['-e', k, v])
+        args += extra_args
+        self.shell(args)
+
+        if wait:
+            self.app_wait(package_name)
+        
+    @deprecated(version="2.0.0", reason="You should use app_current instead")
+    def current_app(self):
+        return self.app_current()
 
     @retry(EnvironmentError, delay=.5, tries=3, jitter=.1)
-    def current_app(self):
+    def app_current(self):
         """
         Returns:
             dict(package, activity, pid?)
@@ -921,6 +929,41 @@ class UIAutomatorServer(object):
             time.sleep(.5)
         return False
 
+    def app_wait(self, package_name: str, timeout:float = 20.0, front=False) -> int:
+        """ Wait until app launched
+        Args:
+            package_name (str): package name
+            timeout (float): maxium wait time
+            front (bool): wait until app is current app
+        
+        Returns:
+            pid (int) 0 if launch failed
+        """
+        pid = None
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if front:
+                if self.current_app()['package'] == package_name:
+                    pid = self._pidof_app(package_name)
+                    break
+            else:
+                if package_name in self.app_list_running():
+                    pid = self._pidof_app(package_name)
+                    break
+            time.sleep(1)
+
+        return pid or 0
+
+    def app_list_running(self) -> list:
+        """
+        Returns:
+            list of running apps
+        """
+        output, _ = self.shell(['pm', 'list', 'packages'])
+        packages = re.findall(r'package:([^\s]+)', output)
+        process_names = re.findall(r'([^\s]+)$', self.shell('ps').output, re.M)
+        return list(set(packages).intersection(process_names))
+
     def app_stop(self, pkg_name):
         """ Stop one application: am force-stop"""
         self.shell(['am', 'force-stop', pkg_name])
@@ -934,23 +977,23 @@ class UIAutomatorServer(object):
             a list of killed apps
         """
         our_apps = ['com.github.uiautomator', 'com.github.uiautomator.test']
-        output, _ = self.shell(['pm', 'list', 'packages', '-3'])
-        pkgs = re.findall(r'package:([^\s]+)', output)
-        process_names = re.findall(r'([^\s]+)$', self.shell('ps')[0], re.M)
-        kill_pkgs = set(pkgs).intersection(process_names).difference(our_apps +
-                                                                     excludes)
-        kill_pkgs = list(kill_pkgs)
+        kill_pkgs = set(self.app_list_running()).difference(our_apps + excludes)
         for pkg_name in kill_pkgs:
             self.app_stop(pkg_name)
-        return kill_pkgs
+        return list(kill_pkgs)
 
     def app_clear(self, pkg_name):
         """ Stop and clear app data: pm clear """
         self.shell(['pm', 'clear', pkg_name])
 
-    def app_uninstall(self, pkg_name):
-        """ Uninstall an app """
-        self.shell(["pm", "uninstall", pkg_name])
+    def app_uninstall(self, pkg_name) -> bool:
+        """ Uninstall an app 
+        
+        Returns:
+            bool: success
+        """
+        ret = self.shell(["pm", "uninstall", pkg_name])
+        return ret.exit_code == 0
 
     def app_uninstall_all(self, excludes=[], verbose=False):
         """ Uninstall all apps """
@@ -961,8 +1004,11 @@ class UIAutomatorServer(object):
         pkgs = list(pkgs)
         for pkg_name in pkgs:
             if verbose:
-                print("uninstalling", pkg_name)
-            self.app_uninstall(pkg_name)
+                print("uninstalling", pkg_name, " ", end="", flush=True)
+            ok = self.app_uninstall(pkg_name)
+            if verbose:
+                print("OK" if ok else "FAIL")
+
         return pkgs
 
     def unlock(self):
@@ -1130,7 +1176,7 @@ class UIAutomatorServer(object):
         resp.raise_for_status()
         resp = resp.json()
         if not resp.get('success'):
-            raise UiaError(resp.get('description', 'unknown'))
+            raise BaseError(resp.get('description', 'unknown'))
         return resp.get('data')
 
     def app_icon(self, pkg_name):
@@ -1172,7 +1218,7 @@ class UIAutomatorServer(object):
         else:
             self.jsonrpc.setAccessibilityPatterns({})
 
-    def session(self, pkg_name=None, attach=False, launch_timeout=None):
+    def session(self, pkg_name=None, attach=False, launch_timeout=None, strict=False):
         """
         Create a new session
 
@@ -1180,6 +1226,8 @@ class UIAutomatorServer(object):
             pkg_name (str): android package name
             attach (bool): attach to already running app
             launch_timeout (int): launch timeout
+            strict (bool): used along with attach, 
+                when attach and strict both true, SessionBrokenError will raise if app not running
 
         Raises:
             requests.HTTPError, SessionBrokenError
@@ -1188,7 +1236,7 @@ class UIAutomatorServer(object):
             return self._default_session
 
         if not attach:
-            request_data = {"flags": "-W -S"}
+            request_data = {"flags": "-S"}
             if launch_timeout:
                 request_data["timeout"] = str(launch_timeout)
             resp = self._reqsess.post(
@@ -1204,7 +1252,10 @@ class UIAutomatorServer(object):
             time.sleep(2.5)  # wait launch finished, maybe no need
         pid = self._pidof_app(pkg_name)
         if not pid:
-            raise SessionBrokenError(pkg_name)
+            if strict:
+                raise SessionBrokenError(pkg_name)
+            return self.session(pkg_name, attach=False, launch_timeout=launch_timeout)
+
         return Session(self, pkg_name, pid)
 
     @property
@@ -1232,7 +1283,7 @@ class UIAutomatorServer(object):
             return getattr(self._default_session, attr)
         except AttributeError:
             raise AttributeError(
-                "'Session or UIAutomatorServer' object has no attribute '%s'" %
+                "'Session or Device' object has no attribute '%s'" %
                 attr)
 
     def __call__(self, **kwargs) -> Session:
@@ -1284,3 +1335,6 @@ class AdbShell(object):
         x0, y0 = self._adjust_pos(x0, y0, w, h)
         x1, y1 = self._adjust_pos(x1, y1, w, h)
         self.shell("input swipe %d %d %d %d" % (x0, y0, x1, y1))
+
+
+UIAutomatorServer = Device # Deprecated UIAutomatorServer
