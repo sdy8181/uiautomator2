@@ -4,9 +4,15 @@
 # class ATXError(Exception):
 #     pass
 
+import json
+
 
 class BaseError(Exception):
     pass
+
+
+class RetryError(BaseError):
+    """ retry when meet this error """
 
 
 class UiaError(BaseError):
@@ -57,6 +63,10 @@ class JsonRpcError(UiaError):
         self.message = error.get('message', '')
         self.data = error.get('data', '')
         self.method = method
+        if isinstance(self.data, dict):
+            self.exception_name = self.data.get("exceptionTypeName")
+        else:
+            self.exception_name = None
 
     def __str__(self):
         return '%d %s: <%s> data: %s, method: %s' % (

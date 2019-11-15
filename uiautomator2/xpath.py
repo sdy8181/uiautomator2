@@ -7,9 +7,16 @@ import abc
 import io
 import json
 import re
+import logging
 import threading
 import time
+import inspect
+import functools
+from collections import defaultdict
+from types import ModuleType
+from typing import Union
 
+from logzero import setup_logger
 from logzero import logger
 from PIL import Image
 
@@ -36,6 +43,46 @@ def init():
 def string_quote(s):
     """ TODO(ssx): quick way to quote string """
     return '"' + s + '"'
+
+
+def str2bytes(v) -> bytes:
+    if isinstance(v, bytes):
+        return v
+    return v.encode('utf-8')
+
+
+def strict_xpath(xpath: str, logger=logger) -> str:
+    """ make xpath to be computer recognized xpath """
+    orig_xpath = xpath
+
+    if xpath.startswith('//'):
+        pass
+    elif xpath.startswith('@'):
+        xpath = '//*[@resource-id={}]'.format(string_quote(xpath[1:]))
+    elif xpath.startswith('^'):
+        xpath = '//*[re:match(text(), {})]'.format(string_quote(xpath))
+    # elif xpath.startswith("$"):  # special for objects
+    #     key = xpath[1:]
+    #     return self(self.__alias_get(key), source)
+    elif xpath.startswith('%') and xpath.endswith("%"):
+        xpath = '//*[contains(@text, {})]'.format(string_quote(
+            xpath[1:-1]))
+    elif xpath.startswith('%'):
+        text = xpath[1:]
+        for c in ".*[]?-":
+            text = text.replace(c, "\\"+c)
+        xpath = '//*[re:match(@text, {})]'.format(string_quote(text))
+    elif xpath.endswith('%'):
+        text = xpath[:-1]
+        for c in ".*[]?-":
+            text = text.replace(c, "\\"+c)
+        xpath = '//*[re:match(@text, {})]'.format(string_quote(text))
+    else:
+        xpath = '//*[@text={0} or @content-desc={0}]'.format(
+            string_quote(xpath))
+
+    logger.debug("xpath %s -> %s", orig_xpath, xpath)
+    return xpath
 
 
 class TimeoutException(Exception):
@@ -83,16 +130,24 @@ class XPath(object):
 
         self._watchers = []  # item: {"xpath": .., "callback": func}
         self._timeout = 10.0
-        self._click_before_delay = 0.0
-        self._click_after_delay = None
+        self._click_before_delay = 0.0 # pre delay
+        self._click_after_delay = None # post delay
         self._last_source = None
+        self._event_callbacks = defaultdict(list)
 
         # used for click("#back") and back is the key
         self._alias = {}
         self._alias_strict = False
+        self._dump_lock = threading.Lock()
         self._watch_stop_event = threading.Event()
         self._watch_stopped = threading.Event()
-        self._dump_lock = threading.Lock()
+        self._watch_running = False # func run_watchers is calling
+        self._watching = False # func watch_forever is calling
+
+        # 这里setup_logger不可以通过level参数传入logging.INFO
+        # 不然其StreamHandler都要重新setLevel，没看懂也没关系，反正就是不要这么干. 特此备注
+        self.logger = setup_logger()
+        self.logger.setLevel(logging.INFO)
 
     def global_set(self, key, value):  #dicts):
         valid_keys = {
@@ -115,16 +170,24 @@ class XPath(object):
     def get_last_hierarchy(self):
         return self._last_source
 
+    def add_event_listener(self, event_name, callback):
+        self._event_callbacks[event_name] += [callback]
+
     def send_click(self, x, y):
         if self._click_before_delay:
-            logger.debug("click before delay %.1f seconds",
+            self.logger.debug("click before delay %.1f seconds",
                          self._click_after_delay)
             time.sleep(self._click_before_delay)
+
+        # TODO(ssx): should use a better way
+        # event callbacks for report generate
+        for callback_func in self._event_callbacks['send_click']:
+            callback_func(x, y)
 
         self._d.click(x, y)
 
         if self._click_after_delay:
-            logger.debug("click after delay %.1f seconds",
+            self.logger.debug("click after delay %.1f seconds",
                          self._click_after_delay)
             time.sleep(self._click_after_delay)
 
@@ -143,18 +206,22 @@ class XPath(object):
     def match(self, xpath, source=None):
         return len(self(xpath, source).all()) > 0
 
-    def when(self, xpath: str):
+    def when(self, xquery: str):
         obj = self
 
         def _click(selector):
             selector.get_last_match().click()
 
         class _Watcher():
+            def __init__(self, xquery):
+                self._xqueries = [xquery]
+
+            def when(self, xquery: str):
+                self._xqueries.append(xquery)
+                return self
+
             def click(self):
-                obj._watchers.append({
-                    "xpath": xpath,
-                    "callback": _click,
-                })
+                self.call(_click)
 
             def call(self, func):
                 """
@@ -162,19 +229,84 @@ class XPath(object):
                     func: accept only one argument "selector"
                 """
                 obj._watchers.append({
-                    "xpath": xpath,
+                    "xqueries": self._xqueries,
                     "callback": func,
                 })
 
-        return _Watcher()
+        return _Watcher(xquery)
+
+    def apply_watch_from_yaml(self, data):
+        """
+        Examples of argument data
+
+            ---
+            - when: "@com.example.app/popup"
+            then: >
+                def callback(d):
+                    d.click(0.5, 0.5)
+            - when: 继续
+            then: click
+        """
+        try:
+            import yaml
+        except ImportError:
+            self.logger.warning("missing lib pyyaml")
+
+        data = yaml.load(data, Loader=yaml.SafeLoader)
+        for item in data:
+            when, then = item['when'], item['then']
+
+            trigger = lambda: None
+            self.logger.info("%s, %s", when, then)
+            if then == 'click':
+                trigger = lambda selector: selector.get_last_match().click()
+                trigger.__doc__ = "click"
+            elif then.lstrip().startswith("def callback"):
+                mod = ModuleType("_inner_module")
+                exec(then, mod.__dict__)
+                trigger = mod.callback
+                trigger.__doc__ = then
+            else:
+                self.logger.warning("Unknown then: %r", then)
+
+            self.logger.debug("When: %r, Trigger: %r", when, trigger.__doc__)
+            self.when(when).call(trigger)
 
     def run_watchers(self, source=None):
+        self._watch_running = True
+        try:
+            self._exec_watchers(source=source)
+        finally:
+            self._watch_running = False
+
+    def _exec_watchers(self, source=None):
         source = source or self.dump_hierarchy()
         for h in self._watchers:
-            selector = self(h['xpath'], source)
-            if selector.exists:
-                logger.info("XPath(hook) %s", h['xpath'])
-                h['callback'](selector)
+            last_selector = None
+            for xquery in h['xqueries']:
+                last_selector = self(xquery, source)
+                if not last_selector.exists:
+                    last_selector = None
+                    break
+            if last_selector:
+                self.logger.info("XPath(hook) %s", h['xqueries'])
+                cb = h['callback']
+                defaults = {
+                    "selector": last_selector,
+                    "d": self._d,
+                    "source": source,
+                }
+                st = inspect.signature(cb)
+                kwargs = {
+                    key: defaults[key]
+                    for key in st.parameters.keys() if key in defaults
+                }
+                ba = st.bind(**kwargs)
+                ba.apply_defaults()
+                try:
+                    cb(*ba.args, **ba.kwargs)
+                except Exception as e:
+                    self.logger.warning("watchers exception: %s", e)
                 return True
         return False
 
@@ -185,10 +317,14 @@ class XPath(object):
                 triggered = self.run_watchers()
                 wait_timeout = min(0.5, interval) if triggered else interval
         finally:
+            self._watching = False
             self._watch_stopped.clear()
             self._watch_stop_event.set()
 
     def watch_background(self, interval: float = 4.0):
+        if self._watching:
+            self.watch_stop()
+        self._watching = True
         th = threading.Thread(name="xpath_watch",
                               target=self._watch_forever,
                               args=(interval, ))
@@ -198,8 +334,13 @@ class XPath(object):
 
     def watch_stop(self):
         """ stop watch background """
+        if not self._watching:
+            self.logger.warning("watch already stopped")
+            return
+
         if self._watch_stopped.is_set():
             return
+
         self._watch_stopped.set()
         self._watch_stop_event.wait(timeout=10)
         self._watch_stop_event.clear()
@@ -215,18 +356,22 @@ class XPath(object):
             left_time = max(0, deadline - time.time())
             time.sleep(min(0.5, left_time))
 
-    def click(self, xpath, source=None, watch=True, timeout=None):
+    def click(self, xpath, source=None, watch=None, timeout=None, pre_delay:float=None):
         """
         Args:
             xpath (str): xpath string
             watch (bool): click popup elements
             timeout (float): pass
+            pre_delay (float): pre delay wait time before click
 
         Raises:
             TimeoutException
         """
         timeout = timeout or self._timeout
-        logger.info("XPath(timeout %.1f) %s", timeout, xpath)
+        self.logger.info("XPath(timeout %.1f) %s", timeout, xpath)
+
+        if watch is None:
+            watch = not self._watch_running
 
         deadline = time.time() + timeout
         while True:
@@ -238,6 +383,9 @@ class XPath(object):
 
             selector = self(xpath, source)
             if selector.exists:
+                if pre_delay:
+                    self.logger.debug("pre-delay %.1f seconds", pre_delay)
+                    time.sleep(pre_delay)
                 selector.get_last_match().click()
                 time.sleep(.5)  # post sleep
                 return
@@ -246,7 +394,7 @@ class XPath(object):
                 break
             time.sleep(.5)
 
-        raise TimeoutException("timeout %.1f" % timeout)
+        raise TimeoutException("timeout %.1f, xpath: %s" % (timeout, xpath))
 
     def __alias_get(self, key, default=None):
         """
@@ -260,40 +408,27 @@ class XPath(object):
         return value
 
     def __call__(self, xpath: str, source=None):
-        if xpath.startswith('//'):
-            pass
-        elif xpath.startswith('@'):
-            xpath = '//*[@resource-id={}]'.format(string_quote(xpath[1:]))
-        elif xpath.startswith('^'):
-            xpath = '//*[re:match(text(), {})]'.format(string_quote(xpath))
-        elif xpath.startswith("$"):  # special for objects
-            key = xpath[1:]
-            return self(self.__alias_get(key), source)
-        elif xpath.startswith('%') and xpath.endswith("%"):
-            xpath = '//*[contains(@text, {})]'.format(string_quote(
-                xpath[1:-1]))
-        elif xpath.startswith('%'):
-            xpath = '//*[starts-with(@text, {})]'.format(
-                string_quote(xpath[1:]))
-        elif xpath.endswith('%'):
-            # //*[ends-with(@text, "suffix")] only valid in Xpath2.0
-            xpath = '//*[ends-with(@text, {})]'.format(string_quote(
-                xpath[:-1]))
-        else:
-            xpath = '//*[@text={0} or @content-desc={0}]'.format(
-                string_quote(xpath))
         # print("XPATH:", xpath)
         return XPathSelector(self, xpath, source)
 
 
 class XPathSelector(object):
-    def __init__(self, parent: XPath, xpath: str, source=None):
+    def __init__(self, parent: XPath, xpath: Union[list, str], source=None):
+        self.logger = parent.logger
+
         self._parent = parent
         self._d = parent._d
-        self._xpath = xpath
+        self._xpath_list = [strict_xpath(xpath, self.logger)] if isinstance(xpath, str) else xpath
         self._source = source
         self._last_source = None
         self._watchers = []
+        
+        self.click = functools.partial(self._parent.click, self._xpath_list) # parent click
+
+    def xpath(self, xpath: str):
+        xpath = strict_xpath(xpath, self.logger)
+        self._xpath_list.append(xpath)
+        return self
 
     @property
     def _global_timeout(self):
@@ -307,12 +442,17 @@ class XPathSelector(object):
         xml_content = source or self._source or self._parent.dump_hierarchy()
         self._last_source = xml_content
 
-        root = etree.fromstring(xml_content.encode('utf-8'))
+        root = etree.fromstring(str2bytes(xml_content))
         for node in root.xpath("//node"):
-            node.tag = safe_xmlstr(node.attrib.pop("class"))
-        match_nodes = root.xpath(
-            U(self._xpath),
-            namespaces={"re": "http://exslt.org/regular-expressions"})
+            node.tag = safe_xmlstr(node.attrib.pop("class", "")) or "node"
+        
+        match_sets = []
+        for xpath in self._xpath_list:
+            matches = root.xpath(xpath,
+                namespaces={"re": "http://exslt.org/regular-expressions"})
+            match_sets.append(matches)
+        # find out nodes which match all xpaths
+        match_nodes = functools.reduce(lambda x, y: set(x).intersection(y), match_sets)
         return [XMLElement(node, self._parent) for node in match_nodes]
 
     @property
@@ -330,7 +470,7 @@ class XPathSelector(object):
             XPathElementNotFoundError
         """
         if not self.wait(self._global_timeout):
-            raise XPathElementNotFoundError(self._xpath)
+            raise XPathElementNotFoundError(self._xpath_list)
         return self.get_last_match()
 
     def get_last_match(self):
@@ -371,6 +511,9 @@ class XPathSelector(object):
     
     def wait_gone(self, timeout=None):
         """
+        Args:
+            timeout (float): seconds
+        
         Returns:
             True if gone else False
         """
@@ -383,16 +526,8 @@ class XPathSelector(object):
 
     def click_nowait(self):
         x, y = self.all()[0].center()
-        logger.info("click %d, %d", x, y)
+        self.logger.info("click %d, %d", x, y)
         self._parent.send_click(x, y)
-
-    def click(self, watch=True, timeout=None):
-        """
-        Args:
-            watch (bool): click popup element before real operation
-            timeout (float): max wait timeout
-        """
-        self._parent.click(self._xpath, watch=watch, timeout=timeout)
 
     def screenshot(self) -> Image.Image:
         el = self.get()
@@ -477,6 +612,14 @@ class XMLElement(object):
         else:
             raise RuntimeError("Unknown direction:", direction)
 
+    def percent_size(self):
+        """ Returns:
+                (float, float): eg, (0.5, 0.5) means 50%, 50%
+        """
+        ww, wh = self._parent.window_size()
+        _, _, w, h = self.rect
+        return (w/ww, wh/h)
+        
     @property
     def bounds(self):
         """
@@ -503,6 +646,19 @@ class XMLElement(object):
     @property
     def attrib(self):
         return self.elem.attrib
+    
+    @property
+    def info(self):
+        ret = {}
+        for key in ("text", "focusable", "enabled", "focused", "scrollable", "selected"):
+            ret[key] = self.attrib.get(key)
+        ret["className"] = self.elem.tag
+        lx, ly, rx, ry = self.bounds
+        ret["bounds"] = {'left': lx, 'top': ly, 'right': rx, 'bottom': ry}
+        ret["contentDescription"] = self.attrib.get("content-desc")
+        ret["longClickable"] = self.attrib.get("long-clickable")
+        ret["packageName"] = self.attrib.get("package")
+        return ret
 
 
 class AdbUI(BasicUIMeta):

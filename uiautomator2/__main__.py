@@ -30,13 +30,14 @@ def cmd_init(args):
         init.install(args.server)
     else:
         for device in adbutils.adb.iter_device():
-            init = Initer(device)
+            init = Initer(device, loglevel=logging.DEBUG)
             init.install(args.server)
 
 
 def cmd_screenshot(args):
     d = u2.connect(args.serial)
     d.screenshot().save(args.filename)
+    print("Save screenshot to %s" % args.filename)
 
 
 def cmd_identify(args):
@@ -85,7 +86,7 @@ def cmd_stop(args):
 
 def cmd_current(args):
     d = u2.connect(args.serial)
-    print(json.dumps(d.current_app(), indent=4))
+    print(json.dumps(d.app_current(), indent=4))
 
 
 def cmd_console(args):
@@ -125,6 +126,8 @@ _commands = [
          help="take device screenshot",
          flags=[
              dict(args=['filename'],
+                  nargs='?',
+                  default="screenshot.jpg",
                   type=str,
                   help="output filename, jpg or png")
          ]),

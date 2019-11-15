@@ -2,6 +2,7 @@
 #
 
 import hashlib
+import logging
 import os
 import shutil
 import tarfile
@@ -9,10 +10,9 @@ import tarfile
 import humanize
 import progress.bar
 import requests
-from logzero import logger
+from logzero import logger, setup_logger
 from retry import retry
-
-from uiautomator2.version import __apk_version__, __atx_agent_version__
+from uiautomator2.version import __apk_version__, __atx_agent_version__, __jar_version__
 
 appdir = os.path.join(os.path.expanduser("~"), '.uiautomator2')
 
@@ -33,7 +33,7 @@ class DownloadBar(progress.bar.PixelBar):
         return humanize.naturalsize(self.index, gnu=True)
 
 
-def cache_download(url, filename=None, timeout=None):
+def cache_download(url, filename=None, timeout=None, logger=logger):
     """ return downloaded filepath """
     # check cache
     if not filename:
@@ -63,7 +63,7 @@ def cache_download(url, filename=None, timeout=None):
 
     file_size = int(r.headers.get("Content-Length"))
     bar = DownloadBar(filename, max=file_size)
-    with open(storepath + '.tmp', 'wb') as f:
+    with open(storepath + '.part', 'wb') as f:
         chunk_length = 16 * 1024
         while 1:
             buf = r.raw.read(chunk_length)
@@ -72,26 +72,30 @@ def cache_download(url, filename=None, timeout=None):
             f.write(buf)
             bar.next(len(buf))
         bar.finish()
-    shutil.move(storepath + '.tmp', storepath)
+
+    assert file_size == os.path.getsize(storepath + ".part")
+    shutil.move(storepath + '.part', storepath)
     return storepath
 
 
-def mirror_download(url, filename: str):
+def mirror_download(url, filename: str, logger=logger):
     github_host = "https://github.com"
     if url.startswith(github_host):
         mirror_url = "https://tool.appetizer.io" + url[len(
             github_host):]  # mirror of github
         try:
-            return cache_download(mirror_url, filename, timeout=60)
+            return cache_download(mirror_url,
+                                  filename,
+                                  timeout=60,
+                                  logger=logger)
         except requests.RequestException as e:
             logger.debug("download mirror err: %s, use origin source", e)
 
-    return cache_download(url, filename)
+    return cache_download(url, filename, logger=logger)
 
 
 class Initer():
-    def __init__(self, device):
-        logger.info(">>> Initial device %s", device)
+    def __init__(self, device, loglevel=logging.INFO):
         d = self._device = device
 
         self.sdk = d.getprop('ro.build.version.sdk')
@@ -101,19 +105,38 @@ class Initer():
         self.abis = (d.getprop('ro.product.cpu.abilist').strip()
                      or self.abi).split(",")
         self.server_addr = None
+        self.logger = setup_logger(level=loglevel)
+        self.logger.debug("Initial device %s", device)
 
     def shell(self, *args):
-        logger.debug("Shell: %s", args)
+        self.logger.debug("Shell: %s", args)
         return self._device.shell(args)
 
     @property
     def apk_urls(self):
+        """
+        Returns:
+            iter([name, url], [name, url])
+        """
         for name in ["app-uiautomator.apk", "app-uiautomator-test.apk"]:
-            yield "".join([
+            yield (name, "".join([
                 GITHUB_BASEURL,
                 "/android-uiautomator-server/releases/download/",
                 __apk_version__, "/", name
-            ])
+            ]))
+    
+    @property
+    def jar_urls(self):
+        """
+        Returns:
+            iter([name, url], [name, url])
+        """
+        for name in ['bundle.jar', 'uiautomator-stub.jar']:
+            yield (name, "".join([
+                GITHUB_BASEURL,
+                "/android-uiautomator-jsonrpcserver/releases/download/",
+                __jar_version__, "/", name
+            ]))
 
     @property
     def atx_agent_url(self):
@@ -152,7 +175,7 @@ class Initer():
         ])
 
     def push_url(self, url, dest=None, mode=0o755, tgz=False, extract_name=None):  # yapf: disable
-        path = mirror_download(url, os.path.basename(url))
+        path = mirror_download(url, os.path.basename(url), logger=self.logger)
         if tgz:
             tar = tarfile.open(path, 'r:gz')
             path = os.path.join(os.path.dirname(path), extract_name)
@@ -160,11 +183,11 @@ class Initer():
         if not dest:
             dest = "/data/local/tmp/" + os.path.basename(path)
 
-        logger.debug("Push to %s:0%o", dest, mode)
+        self.logger.debug("Push to %s:0%o", dest, mode)
         self._device.sync.push(path, dest, mode=mode)
         return dest
 
-    def is_apk_outdate(self):
+    def is_apk_outdated(self):
         apk1 = self._device.package_info("com.github.uiautomator")
         if not apk1:
             return True
@@ -173,7 +196,28 @@ class Initer():
         if not self._device.package_info("com.github.uiautomator.test"):
             return True
         return False
-    
+
+    def is_atx_agent_outdated(self):
+        agent_version = self._device.shell("/data/local/tmp/atx-agent version").strip()
+        if agent_version == "dev":
+            self.logger.info("skip version check for atx-agent dev")
+            return False
+
+        # semver major.minor.patch
+        try:
+            real_ver = list(map(int, agent_version.split(".")))
+            want_ver = list(map(int, __atx_agent_version__.split(".")))
+        except ValueError:
+            return True
+
+        self.logger.debug("Real version: %s, Expect version: %s", real_ver,
+                          want_ver)
+
+        if real_ver[:2] != want_ver[:2]:
+            return True
+
+        return real_ver[2] < want_ver[2]
+
     def check_install(self):
         """
         Only check atx-agent and test apks (Do not check minicap and minitouch)
@@ -184,50 +228,76 @@ class Initer():
         d = self._device
         if d.sync.stat("/data/local/tmp/atx-agent").size == 0:
             return False
-        
+
+        if self.is_atx_agent_outdated():
+            return False
+
         packages = d.list_packages()
         if 'com.github.uiautomator' not in packages:
             return False
         if 'com.github.uiautomator.test' not in packages:
             return False
-        
+
         return True
 
+    def _install_apks(self):
+        """ use uiautomator 2.0 to run uiautomator test """
+        self.shell("pm", "uninstall", "com.github.uiautomator")
+        self.shell("pm", "uninstall", "com.github.uiautomator.test")
+        for _, url in self.apk_urls:
+            path = self.push_url(url, mode=0o644)
+            package_name = "com.github.uiautomator.test" if "test.apk" in url else "com.github.uiautomator"
+            if os.getenv("TMQ"):
+                # used inside TMQ platform
+                self.shell(
+                    "CLASSPATH=/sdcard/tmq.jar", "exec", "app_process",
+                    "/system/bin",
+                    "com.android.commands.monkey.other.InstallCommand",
+                    "-r", "-v", "-p", package_name, path)
+            else:
+                self.shell("pm", "install", "-r", "-t", path)
+    
+    def _install_jars(self):
+        """ use uiautomator 1.0 to run uiautomator test """
+        for (name, url) in self.jar_urls:
+            self.push_url(url, "/data/local/tmp/"+name, mode=0o644)
+    
+    def _install_atx_agent(self, server_addr=None):
+        self.logger.info("Install atx-agent %s", __atx_agent_version__)
+        self.push_url(self.atx_agent_url,
+                            tgz=True,
+                            extract_name="atx-agent")
+        args = ["/data/local/tmp/atx-agent", "server", "--nouia", "-d"]
+        if server_addr:
+            args.extend(['-t', server_addr])
+        self.shell("/data/local/tmp/atx-agent", "server", "--stop")
+        self.shell(*args)
+
     def install(self, server_addr=None):
-        logger.info("Install minicap, minitouch")
+        self.logger.info("Install minicap, minitouch")
         self.push_url(self.minitouch_url)
         if self.abi == "x86":
-            logger.info(
+            self.logger.info(
                 "abi:x86 seems to be android emulator, skip install minicap")
         elif int(self.sdk) >= 29:
-            logger.info("Android Q (sdk:29) has no minicap resource")
+            self.logger.info("Android Q (sdk:29) has no minicap resource")
         else:
             for url in self.minicap_urls:
                 self.push_url(url)
 
-        logger.info(
-            "Install com.github.uiautomator, com.github.uiautomator.test")
-
-        if self.is_apk_outdate():
-            self.shell("pm", "uninstall", "com.github.uiautomator")
-            self.shell("pm", "uninstall", "com.github.uiautomator.test")
-            for url in self.apk_urls:
-                path = self.push_url(url, mode=0o644)
-                self.shell("pm", "install", "-r", "-t", path)
+        self._install_jars()
+        if self.is_apk_outdated():
+            self.logger.info(
+                "Install com.github.uiautomator, com.github.uiautomator.test %s",
+                __apk_version__)
+            self._install_apks()
         else:
-            logger.info("Already installed com.github.uiautomator apks")
+            self.logger.info("Already installed com.github.uiautomator apks")
 
-        logger.info("Install atx-agent")
-        path = self.push_url(self.atx_agent_url,
-                             tgz=True,
-                             extract_name="atx-agent")
-        args = [path, "server", "--nouia", "-d"]
-        if server_addr:
-            args.extend(['-t', server_addr])
-        self.shell(path, "server", "--stop")
-        self.shell(*args)
+        if self.is_atx_agent_outdated():
+            self._install_atx_agent(server_addr)
 
-        logger.info("Check install")
+        self.logger.info("Check install")
         self.check_atx_agent_version()
         print("Successfully init %s" % self._device)
 
@@ -237,10 +307,10 @@ class Initer():
         tries=10)
     def check_atx_agent_version(self):
         port = self._device.forward_port(7912)
-        logger.debug("Forward: local:tcp:%d -> remote:tcp:%d", port, 7912)
-        response = requests.get("http://127.0.0.1:%d/version" % port).text
-        logger.debug("atx-agent version %s", response.strip())
-    
+        self.logger.debug("Forward: local:tcp:%d -> remote:tcp:%d", port, 7912)
+        version = requests.get("http://127.0.0.1:%d/version" % port).text.strip()
+        self.logger.debug("atx-agent version %s", version)
+
     def uninstall(self):
         self._device.shell(["/data/local/tmp/atx-agent", "server", "--stop"])
         self._device.shell(["rm", "/data/local/tmp/atx-agent"])
@@ -256,5 +326,5 @@ if __name__ == "__main__":
 
     serial = None
     device = adbutils.adb.device(serial)
-    init = Initer(device)
-    init.install('http://xxx')
+    init = Initer(device, loglevel=logging.DEBUG)
+    print(init.check_install())

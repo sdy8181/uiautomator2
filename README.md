@@ -26,6 +26,7 @@
 * 修复了[xiaocong/uiautomator](https://github.com/xiaocong/uiautomator)经常性退出的问题
 * 代码进行了重构和精简，方便维护
 * 实现了一个设备管理平台(也支持iOS) [atxserver2](https://github.com/openatx/atxserver2)
+* 扩充了toast获取和展示的功能
 
 >这里要先说明下，因为经常有很多人问 openatx/uiautomator2 并不支持iOS测试，需要iOS自动化测试，可以转到这个库 [openatx/facebook-wda](https://github.com/openatx/facebook-wda)。
 
@@ -61,6 +62,14 @@ print(d.info)
 screenOn': True, 'sdkInt': 27, 'naturalOrientation': True}
 ```
 
+## Sponsors
+Thank you to all our sponsors! ✨🍰✨
+
+### 金牌赞助商（Gold Sponsor）
+
+霍格沃兹测试学院是由测吧（北京）科技有限公司与知名软件测试社区 [TesterHome](https://testerhome.com/) 合作的高端教育品牌。由 BAT 一线**测试大咖执教**，提供**实战驱动**的接口自动化测试、移动自动化测试、性能测试、持续集成与 DevOps 等技术培训，以及测试开发优秀人才内推服务。[点击学习!](https://ke.qq.com/course/254956?flowToken=1014757)
+
+- 霍格沃兹测试学院: <https://testing-studio.com>
 
 ## 相关项目
 - 设备管理平台，设备多了就会用到 [atxserver2](https://github.com/openatx/atxserver2)
@@ -247,7 +256,7 @@ If this environment variable is empty, uiautomator will fall back to `connect_us
 - install: 安装apk，apk通过URL给出 (暂时不能用)
 - clear-cache: 清空缓存 (废弃中，目前已经不需要改接口）
 - `app-stop-all`: 停止所有应用 （暂不能用）
-- healthcheck: 健康检查 (咱不能用)
+- healthcheck: 健康检查 (暂不能用)
 
     
 # API Documents
@@ -539,7 +548,7 @@ print(d.window_size())
 Get current app info. For some android devices, the output could be empty (see *Output example 3*)
 
 ```python
-print(d.current_app())
+print(d.app_current())
 # Output example 1: {'activity': '.Client', 'package': 'com.netease.example', 'pid': 23710}
 # Output example 2: {'activity': '.Client', 'package': 'com.netease.example'}
 # Output example 3: {'activity': None, 'package': None}
@@ -601,6 +610,14 @@ Below is a possible output:
  'presenceChangedAt': '0001-01-01T00:00:00Z',
  'usingBeganAt': '0001-01-01T00:00:00Z'}
 ```
+### Clipboard
+设置粘贴板内容或获取内容,目前已知问题是9.0之后的后台程序无法获取剪贴板的内容
+
+* clipboard/set_clipboard
+    ```python
+    d.set_clipboard('text', 'label')
+    print(d.clipboard)
+    ```
 
 ### Key Events
 
@@ -687,7 +704,7 @@ You can find all key code definitions at [Android KeyEvnet](https://developer.an
 * SwipeExt 扩展功能
 
     ```python
-    d.swipe_ext("right") # 屏幕右滑，4选1 "left", "right", "up", "bottom"
+    d.swipe_ext("right") # 屏幕右滑，4选1 "left", "right", "up", "down"
     d.swipe_ext("right", scale=0.9) # 默认0.9, 滑动距离为屏幕宽度的90%
     d.swipe_ext("right", box=(0, 0, 100, 100)) # 在 (0,0) -> (100, 100) 这个区域做滑动
     ```
@@ -1263,7 +1280,7 @@ _什么时候该使用这个函数呢？_
 这个时候就需要`send_action`函数了，这里用到了只有输入法才能用的[IME_ACTION_CODE](https://developer.android.com/reference/android/view/inputmethod/EditorInfo)。
 `send_action`先broadcast命令发送给输入法操作`IME_ACTION_CODE`，由输入法完成后续跟EditText的通信。（原理我不太清楚，有了解的，提issue告诉我)
 
-### Toast
+### ~~Toast~~ (2.0之后暂时移除，因为退回到了uiautomator-1.0)
 Show Toast
 
 ```python
@@ -1365,12 +1382,20 @@ d.service("uiautomator").stop()
 # 项目历史
 * 项目重构自 <https://github.com/xiaocong/uiautomator>
 
-## Google uiautomator与uiautomator2的区别
-1. API相似但是不完全兼容
-2. uiautomator2是安卓项目，而uiautomator是Java项目
-3. uiautomator2可以输入中文，而uiautomator的Java工程需借助utf7输入法才能输入中文
-4. uiautomator2必须明确EditText框才能向里面输入文字，uiautomator直接指定父类也可以在子类中输入文字
-5. uiautomator2获取控件速度比uiautomator快
+## Google UiAutomator 2.0和1.x的区别
+https://www.cnblogs.com/insist8089/p/6898181.html
+
+- 新增接口：UiObject2、Until、By、BySelector
+- 引入方式：2.0中，com.android.uiautomator.core.* 引入方式被废弃。改为android.support.test.uiautomator
+- 构建系统：Maven 和/或 Ant（1.x）；Gradle（2.0）
+- 产生的测试包的形式：从zip /jar（1.x） 到 apk（2.0）
+- 在本地环境以adb命令运行UIAutomator测试，启动方式的差别：   
+  adb shell uiautomator runtest UiTest.jar -c package.name.ClassName（1.x）
+  adb shell am instrument -e class com.example.app.MyTest 
+  com.example.app.test/android.support.test.runner.AndroidJUnitRunner（2.0）
+- 能否使用Android服务及接口？ 1.x~不能；2.0~能。
+- og输出？ 使用System.out.print输出流回显至执行端（1.x）； 输出至Logcat（2.0）
+- 执行？测试用例无需继承于任何父类，方法名不限，使用注解 Annotation进行（2.0）;  需要继承UiAutomatorTestCase，测试方法需要以test开头(1.x) 
 
 ## [CHANGELOG (generated by pbr)](CHANGELOG)
 重大更新

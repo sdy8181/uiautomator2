@@ -15,7 +15,7 @@ import requests
 import six
 from retry import retry
 
-from uiautomator2.exceptions import (NullPointerExceptionError,
+from uiautomator2.exceptions import (RetryError, NullPointerExceptionError,
                                      UiObjectNotFoundError, UiautomatorQuitError)
 from uiautomator2.utils import Exists, U, check_alive, hooks_wrap, intersect, cache_return
 from uiautomator2.swipe import SwipeExt
@@ -485,7 +485,7 @@ class Session(object):
         else:
             raise RuntimeError("Invalid format " + format)
 
-    @retry(UiautomatorQuitError, delay=1.0, tries=3, jitter=1.5, logger=logging)
+    @retry(RetryError, delay=1.0, tries=2) 
     def dump_hierarchy(self, compressed=False, pretty=False) -> str:
         """
         Args:
@@ -496,19 +496,12 @@ class Session(object):
             content = self.jsonrpc.dumpWindowHierarchy(compressed, None)
         But through GET /dump/hierarchy will be more robust
         when dumpHierarchy fails, the atx-agent will restart uiautomator again, then retry
-        """
-        res = self.server._reqsess.get(self.server.path2url("/dump/hierarchy"))
-        try:
-            if res.status_code == 500:
-                if not self.server.uiautomator.running():
-                    self.server.uiautomator.start() # 恢复uiautomator的运行
-                    raise UiautomatorQuitError("dump hierarchy", res.text)
 
-            res.raise_for_status()
-        except requests.HTTPError:
-            logging.warning("request error: %s", res.text)
-            raise
-        content = res.json().get("result")
+        v-1.3.4 change back to jsonrpc.dumpWindowHierarchy
+        """
+        content = self.jsonrpc.dumpWindowHierarchy(compressed, None)
+        if content == "":
+            raise RetryError("dump hierarchy is empty")
 
         if pretty and "\n " not in content:
             xml_text = xml.dom.minidom.parseString(content.encode("utf-8"))
@@ -658,6 +651,18 @@ class Session(object):
     @property
     def info(self):
         return self.jsonrpc.deviceInfo()
+
+    @property
+    def clipboard(self):
+        return self.jsonrpc.getClipboard()
+
+    def set_clipboard(self, text, label=None):
+        '''
+        Args:
+            text: The actual text in the clip.
+            label: User-visible label for the clip data.
+        '''
+        self.jsonrpc.setClipboard(label, text)
 
     def __call__(self, **kwargs):
         return UiObject(self, Selector(**kwargs))

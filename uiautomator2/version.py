@@ -2,11 +2,15 @@
 #
 
 import pkg_resources
+try:
+    __version__ = pkg_resources.get_distribution("uiautomator2").version
+except pkg_resources.DistributionNotFound:
+    __version__ = "unknown"
 
-__version__ = pkg_resources.get_distribution("uiautomator2").version
 # See ChangeLog for details
 
-__apk_version__ = '2.0.2'
+__apk_version__ = '2.0.3'
+# 2.0.3 use android.app.Service instead of android.app.intentService to simpfy logic
 # 2.0.2 fix error: AndroidQ Service must be explicit
 # 2.0.1 fix AndroidQ support
 # 2.0.0 remove runWatchersOnWndowsChange, add setToastListener(bool), add floatWindow
@@ -27,7 +31,15 @@ __apk_version__ = '2.0.2'
 # ERR: 1.0.8 bad version number. show ip on notification
 # ERR: 1.0.7 bad version number. new input method, some bug fix
 
-__atx_agent_version__ = '0.6.2'
+__jar_version__ = 'v0.1.6'
+# v0.1.6 first release version
+
+__atx_agent_version__ = '0.7.4'
+# 0.7.4 add /finfo/{filepath:.*} api
+# 0.7.3 add uiautomator-1.0 support
+# 0.7.2 fix stop already stopped uiautomator return status 500 error
+# 0.7.1 fix UIAutomation not connected error.
+# 0.7.0 add webview support, kill uiautomator if no activity in 3 minutes
 # 0.6.2 fix app_info fd leak error, update androidbinary to fix parse apk manifest err
 # 0.6.1 make dump_hierarchy more robust, add cpu,mem collect
 # 0.6.0 add /dump/hierarchy (works fine even if uiautomator is down)
