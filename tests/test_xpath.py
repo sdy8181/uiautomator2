@@ -23,7 +23,7 @@ def test_swipe(sess: u2.Session):
     d = sess
     d.xpath("App").click()
     d.xpath("Alarm").wait()
-    assert not d.xpath("Voice Recognition").exists
+    #assert not d.xpath("Voice Recognition").exists
     d.xpath("@android:id/list").get().swipe("up", 0.5)
     assert d.xpath("Voice Recognition").wait()
 
@@ -57,6 +57,7 @@ def test_watcher(sess: u2.Session, request):
     assert event.wait(5.0), "xpath not trigger callback"
 
 
+@pytest.mark.skip("Deprecated")
 def test_watcher_from_yaml(sess: u2.Session, request):
     yaml_content = """---
 - when: App
@@ -74,3 +75,15 @@ def test_watcher_from_yaml(sess: u2.Session, request):
     sess.xpath.watch_background(interval=1.0)
 
     assert sess.xpath("Alarm Controller").wait(timeout=10)
+
+
+def test_xpath_scroll_to(sess: u2.Session):
+    d = sess
+    d.xpath("Graphics").click()
+    d.xpath("@android:id/list").scroll_to("Pictures")
+    assert d.xpath("Pictures").exists
+
+def test_xpath_parent(sess: u2.Session):
+    d = sess
+    info = d.xpath("App").parent("@android:id/list").info
+    assert info['resourceId'] == 'android:id/list'

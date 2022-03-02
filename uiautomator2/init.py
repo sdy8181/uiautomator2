@@ -1,18 +1,22 @@
 # coding: utf-8
 #
 
+import datetime
 import hashlib
 import logging
 import os
 import shutil
 import tarfile
 
-import humanize
+import adbutils
 import progress.bar
 import requests
 from logzero import logger, setup_logger
 from retry import retry
-from uiautomator2.version import __apk_version__, __atx_agent_version__, __jar_version__
+
+from uiautomator2.version import (__apk_version__, __atx_agent_version__,
+                                  __jar_version__, __version__)
+from uiautomator2.utils import natualsize
 
 appdir = os.path.join(os.path.expanduser("~"), '.uiautomator2')
 
@@ -26,21 +30,28 @@ class DownloadBar(progress.bar.PixelBar):
 
     @property
     def total_size(self):
-        return humanize.naturalsize(self.max, gnu=True)
+        return natualsize(self.max)
 
     @property
     def current_size(self):
-        return humanize.naturalsize(self.index, gnu=True)
+        return natualsize(self.index)
 
 
-def cache_download(url, filename=None, timeout=None, logger=logger):
+def gen_cachepath(url: str) -> str:
+    filename = os.path.basename(url)
+    storepath = os.path.join(
+        appdir, "cache",
+        filename.replace(" ", "_") + "-" +
+        hashlib.sha224(url.encode()).hexdigest()[:10], filename)
+    return storepath
+
+def cache_download(url, filename=None, timeout=None, storepath=None, logger=logger):
     """ return downloaded filepath """
     # check cache
     if not filename:
         filename = os.path.basename(url)
-    storepath = os.path.join(appdir,
-                             hashlib.sha224(url.encode()).hexdigest(),
-                             filename)
+    if not storepath:
+        storepath = gen_cachepath(url)
     storedir = os.path.dirname(storepath)
     if not os.path.isdir(storedir):
         os.makedirs(storedir)
@@ -73,12 +84,18 @@ def cache_download(url, filename=None, timeout=None, logger=logger):
             bar.next(len(buf))
         bar.finish()
 
-    assert file_size == os.path.getsize(storepath + ".part")
+    assert file_size == os.path.getsize(storepath +
+                                        ".part")  # may raise FileNotFoundError
     shutil.move(storepath + '.part', storepath)
     return storepath
 
-
-def mirror_download(url, filename: str, logger=logger):
+def mirror_download(url: str, filename=None, logger: logging.Logger = logger):
+    """
+    Download from mirror, then fallback to origin url
+    """
+    storepath = gen_cachepath(url)
+    if not filename:
+        filename = os.path.basename(url)
     github_host = "https://github.com"
     if url.startswith(github_host):
         mirror_url = "https://tool.appetizer.io" + url[len(
@@ -87,15 +104,43 @@ def mirror_download(url, filename: str, logger=logger):
             return cache_download(mirror_url,
                                   filename,
                                   timeout=60,
+                                  storepath=storepath,
                                   logger=logger)
-        except requests.RequestException as e:
-            logger.debug("download mirror err: %s, use origin source", e)
+        except (requests.RequestException, FileNotFoundError,
+                AssertionError) as e:
+            logger.debug("download error from mirror(%s), use origin source", e)
 
-    return cache_download(url, filename, logger=logger)
+    return cache_download(url, filename, storepath=storepath, logger=logger)
 
+
+def app_uiautomator_apk_urls():
+    ret = []
+    for name in ["app-uiautomator.apk", "app-uiautomator-test.apk"]:
+        ret.append((name, "".join([
+            GITHUB_BASEURL, "/android-uiautomator-server/releases/download/",
+            __apk_version__, "/", name
+        ])))
+    return ret
+
+
+def parse_apk(path: str):
+    """
+    Parse APK
+    
+    Returns:
+        dict contains "package" and "main_activity"
+    """
+    import apkutils2
+    apk = apkutils2.APK(path)
+    package_name = apk.manifest.package_name
+    main_activity = apk.manifest.main_activity
+    return {
+        "package": package_name,
+        "main_activity": main_activity,
+    }
 
 class Initer():
-    def __init__(self, device, loglevel=logging.INFO):
+    def __init__(self, device: adbutils.AdbDevice, loglevel=logging.DEBUG):
         d = self._device = device
 
         self.sdk = d.getprop('ro.build.version.sdk')
@@ -104,27 +149,24 @@ class Initer():
         self.arch = d.getprop('ro.arch')
         self.abis = (d.getprop('ro.product.cpu.abilist').strip()
                      or self.abi).split(",")
-        self.server_addr = None
+        
+        self.__atx_listen_addr = "127.0.0.1:7912"
         self.logger = setup_logger(level=loglevel)
-        self.logger.debug("Initial device %s", device)
+        # self.logger.debug("Initial device %s", device)
+        self.logger.info("uiautomator2 version: %s", __version__)
 
-    def shell(self, *args):
-        self.logger.debug("Shell: %s", args)
-        return self._device.shell(args)
+    def set_atx_agent_addr(self, addr: str):
+        assert ":" in addr
+        self.__atx_listen_addr = addr
 
     @property
-    def apk_urls(self):
-        """
-        Returns:
-            iter([name, url], [name, url])
-        """
-        for name in ["app-uiautomator.apk", "app-uiautomator-test.apk"]:
-            yield (name, "".join([
-                GITHUB_BASEURL,
-                "/android-uiautomator-server/releases/download/",
-                __apk_version__, "/", name
-            ]))
-    
+    def atx_agent_path(self):
+        return "/data/local/tmp/atx-agent"
+
+    def shell(self, *args, timeout=60):
+        self.logger.debug("Shell: %s", args)
+        return self._device.shell(args, timeout=60)
+
     @property
     def jar_urls(self):
         """
@@ -145,6 +187,7 @@ class Initer():
             'arm64-v8a': 'atx-agent_{v}_linux_armv7.tar.gz',
             'armeabi': 'atx-agent_{v}_linux_armv6.tar.gz',
             'x86': 'atx-agent_{v}_linux_386.tar.gz',
+            'x86_64': 'atx-agent_{v}_linux_386.tar.gz',
         }
         name = None
         for abi in self.abis:
@@ -160,8 +203,12 @@ class Initer():
 
     @property
     def minicap_urls(self):
+        """
+        binary from https://github.com/openatx/stf-binaries
+        only got abi: armeabi-v7a and arm64-v8a
+        """
         base_url = GITHUB_BASEURL + \
-            "/stf-binaries/raw/master/node_modules/minicap-prebuilt/prebuilt/"
+            "/stf-binaries/raw/0.3.0/node_modules/@devicefarmer/minicap-prebuilt/prebuilt/"
         sdk = self.sdk
         yield base_url + self.abi + "/lib/android-" + sdk + "/minicap.so"
         yield base_url + self.abi + "/bin/minicap"
@@ -170,16 +217,21 @@ class Initer():
     def minitouch_url(self):
         return ''.join([
             GITHUB_BASEURL + "/stf-binaries",
-            "/raw/master/node_modules/minitouch-prebuilt/prebuilt/",
+            "/raw/0.3.0/node_modules/@devicefarmer/minitouch-prebuilt/prebuilt/",
             self.abi + "/bin/minitouch"
         ])
 
+    @retry(tries=2, logger=logger)
     def push_url(self, url, dest=None, mode=0o755, tgz=False, extract_name=None):  # yapf: disable
-        path = mirror_download(url, os.path.basename(url), logger=self.logger)
+        path = mirror_download(url,
+                               filename=os.path.basename(url),
+                               logger=self.logger)
         if tgz:
             tar = tarfile.open(path, 'r:gz')
             path = os.path.join(os.path.dirname(path), extract_name)
-            tar.extract(extract_name, os.path.dirname(path))
+            tar.extract(extract_name,
+                        os.path.dirname(path))  # zlib.error may raise
+
         if not dest:
             dest = "/data/local/tmp/" + os.path.basename(path)
 
@@ -188,17 +240,47 @@ class Initer():
         return dest
 
     def is_apk_outdated(self):
-        apk1 = self._device.package_info("com.github.uiautomator")
-        if not apk1:
+        """
+        If apk signature mismatch, the uiautomator test will fail to start
+        command: am instrument -w -r -e debug false \
+                -e class com.github.uiautomator.stub.Stub \
+                com.github.uiautomator.test/android.support.test.runner.AndroidJUnitRunner
+        java.lang.SecurityException: Permission Denial: \
+            starting instrumentation ComponentInfo{com.github.uiautomator.test/android.support.test.runner.AndroidJUnitRunner} \
+            from pid=7877, uid=7877 not allowed \
+            because package com.github.uiautomator.test does not have a signature matching the target com.github.uiautomator
+        """
+        apk_debug = self._device.package_info("com.github.uiautomator")
+        apk_debug_test = self._device.package_info(
+            "com.github.uiautomator.test")
+        self.logger.debug("apk-debug package-info: %s", apk_debug)
+        self.logger.debug("apk-debug-test package-info: %s", apk_debug_test)
+        if not apk_debug or not apk_debug_test:
             return True
-        if apk1['version_name'] != __apk_version__:
+        if apk_debug['version_name'] != __apk_version__:
+            self.logger.info(
+                "package com.github.uiautomator version %s, latest %s",
+                apk_debug['version_name'], __apk_version__)
             return True
-        if not self._device.package_info("com.github.uiautomator.test"):
-            return True
+
+        if apk_debug['signature'] != apk_debug_test['signature']:
+            # On vivo-Y67 signature might not same, but signature matched.
+            # So here need to check first_install_time again
+            max_delta = datetime.timedelta(minutes=3)
+            if abs(apk_debug['first_install_time'] -
+                   apk_debug_test['first_install_time']) > max_delta:
+                self.logger.debug(
+                    "package com.github.uiautomator does not have a signature matching the target com.github.uiautomator"
+                )
+                return True
         return False
 
     def is_atx_agent_outdated(self):
-        agent_version = self._device.shell("/data/local/tmp/atx-agent version").strip()
+        """
+        Returns:
+            bool
+        """
+        agent_version = self._device.shell([self.atx_agent_path, "version"]).strip()
         if agent_version == "dev":
             self.logger.info("skip version check for atx-agent dev")
             return False
@@ -226,80 +308,47 @@ class Initer():
             True if everything is fine, else False
         """
         d = self._device
-        if d.sync.stat("/data/local/tmp/atx-agent").size == 0:
+        if d.sync.stat(self.atx_agent_path).size == 0:
             return False
 
         if self.is_atx_agent_outdated():
             return False
 
-        packages = d.list_packages()
-        if 'com.github.uiautomator' not in packages:
-            return False
-        if 'com.github.uiautomator.test' not in packages:
+        if self.is_apk_outdated():
             return False
 
         return True
 
-    def _install_apks(self):
-        """ use uiautomator 2.0 to run uiautomator test """
+    def _install_uiautomator_apks(self):
+        """ use uiautomator 2.0 to run uiautomator test
+        通常在连接USB数据线的情况下调用
+        """
         self.shell("pm", "uninstall", "com.github.uiautomator")
         self.shell("pm", "uninstall", "com.github.uiautomator.test")
-        for _, url in self.apk_urls:
+        for filename, url in app_uiautomator_apk_urls():
             path = self.push_url(url, mode=0o644)
-            package_name = "com.github.uiautomator.test" if "test.apk" in url else "com.github.uiautomator"
-            if os.getenv("TMQ"):
-                # used inside TMQ platform
-                self.shell(
-                    "CLASSPATH=/sdcard/tmq.jar", "exec", "app_process",
-                    "/system/bin",
-                    "com.android.commands.monkey.other.InstallCommand",
-                    "-r", "-v", "-p", package_name, path)
-            else:
-                self.shell("pm", "install", "-r", "-t", path)
-    
+            self.shell("pm", "install", "-r", "-t", path)
+            self.logger.info("- %s installed", filename)
+
     def _install_jars(self):
         """ use uiautomator 1.0 to run uiautomator test """
         for (name, url) in self.jar_urls:
-            self.push_url(url, "/data/local/tmp/"+name, mode=0o644)
-    
-    def _install_atx_agent(self, server_addr=None):
+            self.push_url(url, "/data/local/tmp/" + name, mode=0o644)
+
+    def _install_atx_agent(self):
         self.logger.info("Install atx-agent %s", __atx_agent_version__)
-        self.push_url(self.atx_agent_url,
-                            tgz=True,
-                            extract_name="atx-agent")
-        args = ["/data/local/tmp/atx-agent", "server", "--nouia", "-d"]
-        if server_addr:
-            args.extend(['-t', server_addr])
-        self.shell("/data/local/tmp/atx-agent", "server", "--stop")
-        self.shell(*args)
+        self.push_url(self.atx_agent_url, tgz=True, extract_name="atx-agent")
 
-    def install(self, server_addr=None):
-        self.logger.info("Install minicap, minitouch")
-        self.push_url(self.minitouch_url)
-        if self.abi == "x86":
-            self.logger.info(
-                "abi:x86 seems to be android emulator, skip install minicap")
-        elif int(self.sdk) >= 29:
-            self.logger.info("Android Q (sdk:29) has no minicap resource")
-        else:
-            for url in self.minicap_urls:
-                self.push_url(url)
-
-        self._install_jars()
-        if self.is_apk_outdated():
-            self.logger.info(
-                "Install com.github.uiautomator, com.github.uiautomator.test %s",
-                __apk_version__)
-            self._install_apks()
-        else:
-            self.logger.info("Already installed com.github.uiautomator apks")
-
+    def setup_atx_agent(self):
+        # stop atx-agent first
+        self.shell(self.atx_agent_path, "server", "--stop")
         if self.is_atx_agent_outdated():
-            self._install_atx_agent(server_addr)
-
-        self.logger.info("Check install")
+            self.logger.info("Install atx-agent %s", __atx_agent_version__)
+            self.push_url(self.atx_agent_url, tgz=True, extract_name="atx-agent")
+        
+        self.shell(self.atx_agent_path, 'server', '--nouia', '-d', "--addr", self.__atx_listen_addr)
+        self.logger.info("Check atx-agent version")
         self.check_atx_agent_version()
-        print("Successfully init %s" % self._device)
 
     @retry(
         (requests.ConnectionError, requests.ReadTimeout, requests.HTTPError),
@@ -308,17 +357,52 @@ class Initer():
     def check_atx_agent_version(self):
         port = self._device.forward_port(7912)
         self.logger.debug("Forward: local:tcp:%d -> remote:tcp:%d", port, 7912)
-        version = requests.get("http://127.0.0.1:%d/version" % port).text.strip()
+        version = requests.get("http://127.0.0.1:%d/version" %
+                               port).text.strip()
         self.logger.debug("atx-agent version %s", version)
 
+        wlan_ip = requests.get("http://127.0.0.1:%d/wlan/ip" % port).text.strip()
+        self.logger.debug("device wlan ip: %s", wlan_ip)
+        return version
+
+    def install(self):
+        """
+        TODO: push minicap and minitouch from tgz file
+        """
+        self.logger.info("Install minicap, minitouch")
+        self.push_url(self.minitouch_url)
+        if self.abi == "x86":
+            self.logger.info(
+                "abi:x86 not supported well, skip install minicap")
+        elif int(self.sdk) > 30:
+            self.logger.info("Android R (sdk:30) has no minicap resource")
+        else:
+            for url in self.minicap_urls:
+                self.push_url(url)
+
+        # self._install_jars() # disable jars
+        if self.is_apk_outdated():
+            self.logger.info(
+                "Install com.github.uiautomator, com.github.uiautomator.test %s",
+                __apk_version__)
+            self._install_uiautomator_apks()
+        else:
+            self.logger.info("Already installed com.github.uiautomator apks")
+
+        self.setup_atx_agent()
+        print("Successfully init %s" % self._device)
+
     def uninstall(self):
-        self._device.shell(["/data/local/tmp/atx-agent", "server", "--stop"])
-        self._device.shell(["rm", "/data/local/tmp/atx-agent"])
+        self._device.shell([self.atx_agent_path, "server", "--stop"])
+        self._device.shell(["rm", self.atx_agent_path])
+        self.logger.info("atx-agent stopped and removed")
         self._device.shell(["rm", "/data/local/tmp/minicap"])
         self._device.shell(["rm", "/data/local/tmp/minicap.so"])
         self._device.shell(["rm", "/data/local/tmp/minitouch"])
-        self._device.shell(["am", "uninstall", "com.github.uiautomator"])
-        self._device.shell(["am", "uninstall", "com.github.uiautomator.test"])
+        self.logger.info("minicap, minitouch removed")
+        self._device.shell(["pm", "uninstall", "com.github.uiautomator"])
+        self._device.shell(["pm", "uninstall", "com.github.uiautomator.test"])
+        self.logger.info("com.github.uiautomator uninstalled, all done !!!")
 
 
 if __name__ == "__main__":

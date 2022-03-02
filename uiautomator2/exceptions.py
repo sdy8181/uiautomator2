@@ -8,30 +8,37 @@ import json
 
 
 class BaseError(Exception):
-    pass
+    """ 所有错误的基类 """
+
+
+class ConnectError(BaseError):
+    """ adb connect 异常 """
 
 
 class RetryError(BaseError):
     """ retry when meet this error """
 
 
-class UiaError(BaseError):
-    pass
+class ServerError(BaseError):
+    """ app 服务端错误, 没有安装，或者启动错误 """
 
 
-class UiautomatorQuitError(UiaError):
-    pass
+## Error base on ServerError
+
+class SessionBrokenError(ServerError):
+    """ only happens when app quit or crash """
 
 
-class ConnectError(UiaError):
-    pass
+class UiAutomationNotConnectedError(ServerError):
+    """ 与手机上运行的UiAutomator服务连接断开 """
 
 
-class XPathElementNotFoundError(UiaError):
-    pass
+class UiautomatorQuitError(ServerError):
+    """ uiautomator 没有运行错误 """
 
 
-class GatewayError(UiaError):
+class GatewayError(ServerError):
+    """ 网关错误，通常代表 app-uiautomator.apk没有安装 """
     def __init__(self, response, description):
         self.response = response
         self.description = description
@@ -40,7 +47,17 @@ class GatewayError(UiaError):
         return "uiautomator2.GatewayError(" + self.description + ")"
 
 
-class JsonRpcError(UiaError):
+## errors which no need to restart uiautomator
+
+class RequestError(BaseError):
+    """ jsonrpc call error """
+
+
+class XPathElementNotFoundError(RequestError):
+    pass
+
+
+class JSONRPCError(RequestError):
     @staticmethod
     def format_errcode(errcode):
         m = {
@@ -58,7 +75,7 @@ class JsonRpcError(UiaError):
             return 'Server error'
         return 'Unknown error'
 
-    def __init__(self, error={}, method=None):
+    def __init__(self, error: dict = {}, method=None):
         self.code = error.get('code')
         self.message = error.get('message', '')
         self.data = error.get('data', '')
@@ -77,25 +94,26 @@ class JsonRpcError(UiaError):
         return repr(str(self))
 
 
-class SessionBrokenError(UiaError):
-    """ only happens when app quit or crash """
+class UiObjectNotFoundError(JSONRPCError):
+    """ 控件没找到 """
 
 
-class UiObjectNotFoundError(JsonRpcError):
-    pass
+class NullObjectExceptionError(JSONRPCError):
+    """ 空对象错误 """
 
 
-class UiAutomationNotConnectedError(JsonRpcError):
-    pass
+class NullPointerExceptionError(JSONRPCError):
+    """ 空指针错误 """
 
 
-class NullObjectExceptionError(JsonRpcError):
-    pass
+class StaleObjectExceptionError(JSONRPCError):
+    """ 一种，打算要操作的对象突然消失的错误 """
 
 
-class NullPointerExceptionError(JsonRpcError):
-    pass
+class InjectPermissionError(JSONRPCError):
+    """ 开发者选项中: 模拟点击没有打开 """
 
 
-class StaleObjectExceptionError(JsonRpcError):
-    pass
+# 保证兼容性
+UiaError = BaseError
+JsonRpcError = JSONRPCError

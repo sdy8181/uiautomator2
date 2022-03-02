@@ -10,7 +10,6 @@ import logging
 import os
 import re
 
-import humanize
 import progress.bar
 import requests
 from logzero import logger
@@ -20,6 +19,7 @@ import adbutils
 import uiautomator2 as u2
 
 from .init import Initer
+from .version import __version__
 
 
 def cmd_init(args):
@@ -27,11 +27,20 @@ def cmd_init(args):
     if serial:
         device = adbutils.adb.device(serial)
         init = Initer(device)
-        init.install(args.server)
+        init.install()
     else:
         for device in adbutils.adb.iter_device():
             init = Initer(device, loglevel=logging.DEBUG)
-            init.install(args.server)
+            if args.addr:
+                init.set_atx_agent_addr(args.addr)
+            init.install()
+
+
+def cmd_purge(args):
+    """ remove minicap, minitouch, uiautomator ... """
+    device = adbutils.adb.device(args.serial)
+    init = Initer(device, loglevel=logging.DEBUG)
+    init.uninstall()
 
 
 def cmd_screenshot(args):
@@ -89,6 +98,48 @@ def cmd_current(args):
     print(json.dumps(d.app_current(), indent=4))
 
 
+def cmd_doctor(args):
+    d = adbutils.adb.device(args.serial)
+    from .init import Initer
+    init = Initer(d)
+    logger.debug("sdk:%s abi:%s", init.sdk, init.abi)
+
+    ok = True
+    print("CHECK atx-agent")
+    if init.is_atx_agent_outdated():
+        print("\tFAIL")
+        ok = False
+        # logger.warning("atx-agent is invalid")
+    else:
+        version = init.check_atx_agent_version()
+        print("\tGOOD: atx-agent version", version)
+
+    print("CHECK uiautomator-apks")
+    if init.is_apk_outdated():
+        print("\tFAIL")
+        logger.warning("apk is invalid")
+        ok = False
+    else:
+        apk_debug = init._device.package_info("com.github.uiautomator")
+        version = apk_debug['version_name']
+        print("\tGOOD: com.github.uiautomator", version)
+    
+    if ok:
+        print("CHECK jsonrpc")
+        d = u2.connect(args.serial)
+        # print(d.info)
+        if d.alive:
+            print("\tGOOD: d.info success")
+        else:
+            ok = False
+    
+    print("==> %s <==" % ("GOOD" if ok else "FAIL"))
+    
+
+def cmd_version(args):
+    print("uiautomator2 version: %s" % __version__)
+
+
 def cmd_console(args):
     import code
     import platform
@@ -111,12 +162,15 @@ def cmd_console(args):
 
 
 _commands = [
+    dict(action=cmd_version,
+         command="version",
+         help="show version"),
     dict(action=cmd_init,
          command="init",
          help="install enssential resources to device",
          flags=[
+             dict(args=['--addr'], default='127.0.0.1:7912', help='atx-agent listen address'),
              dict(args=['--serial', '-s'], type=str, help='serial number'),
-             dict(name=['server'], type=str, help='atxserver address'),
              dict(args=['serial_optional'],
                   nargs='?',
                   help='serial number, same as --serial'),
@@ -179,9 +233,15 @@ _commands = [
     dict(action=cmd_current,
          command="current",
          help="show current application"),
+    dict(action=cmd_doctor,
+         command='doctor',
+         help='detect connect problem'),
     dict(action=cmd_console,
          command="console",
          help="launch interactive python console"),
+    dict(action=cmd_purge,
+        command="purge",
+        help="remove minitouch, minicap, atx app etc, from device"),
 ]
 
 

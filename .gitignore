@@ -109,3 +109,8 @@ report/
 *.exe
 node_modules/
 vendor/
+
+docs/*.rst
+
+.DS_Store
+apk_version.txt
